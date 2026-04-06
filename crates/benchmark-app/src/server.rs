@@ -68,6 +68,9 @@ pub async fn run_server() -> Result<()> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/setup", get(index))
+        .route("/dashboard", get(index))
+        .route("/history", get(index))
         .route("/app.js", get(app_js))
         .route("/styles.css", get(styles_css))
         .route("/api/runs", get(list_runs).post(start_run))

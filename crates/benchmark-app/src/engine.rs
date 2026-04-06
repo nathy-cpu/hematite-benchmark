@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use benchmark_core::{BenchmarkConfig, DurabilityPreset, EngineKind, OperationKind};
+use hematite::Hematite;
 use hematite::query::JournalMode;
-use hematite::{Hematite, Value};
 use rand::Rng;
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
@@ -231,81 +231,66 @@ impl EngineAdapter for HematiteAdapter {
         self.db.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS bench_records (
-                id BIGINT PRIMARY KEY,
+                id INT PRIMARY KEY,
                 category TEXT NOT NULL,
-                score BIGINT NOT NULL,
+                score INT NOT NULL,
                 payload TEXT NOT NULL,
-                updated_at BIGINT NOT NULL
+                updated_at INT64 NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_bench_records_category ON bench_records(category);
         "#,
         )?;
 
-        let mut stmt = self.db.prepare(
-            "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
         for id in 1..=config.scenario.initial_rows {
             let row = make_row(config, id);
-            stmt.bind_all(vec![
-                Value::BigInt(row.id as i64),
-                Value::Text(row.category),
-                Value::BigInt(row.score),
-                Value::Text(row.payload),
-                Value::BigInt(row.updated_at),
-            ])?;
-            self.db.execute_prepared(&mut stmt)?;
-            stmt.clear_bindings();
+            self.db.execute(&format!(
+                "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES ({}, {}, {}, {}, {});",
+                row.id,
+                sql_string_literal(&row.category),
+                row.score,
+                sql_string_literal(&row.payload),
+                row.updated_at
+            ))?;
         }
         Ok(())
     }
 
     fn point_read(&mut self, id: u64) -> Result<usize> {
-        let mut stmt = self.db.prepare(
-            "SELECT id, category, score, payload, updated_at FROM bench_records WHERE id = ?1",
-        )?;
-        stmt.bind(1, Value::BigInt(id as i64))?;
-        let rows = stmt.query(&mut self.db.connection)?;
+        let rows = self.db.query(&format!(
+            "SELECT id, category, score, payload, updated_at FROM bench_records WHERE id = {};",
+            id
+        ))?;
         Ok(rows.rows.len())
     }
 
     fn range_scan(&mut self, start_id: u64, limit: usize) -> Result<usize> {
-        let mut stmt = self.db.prepare(
-            "SELECT id, category, score, payload, updated_at FROM bench_records WHERE id >= ?1 ORDER BY id LIMIT ?2",
-        )?;
-        stmt.bind_all(vec![
-            Value::BigInt(start_id as i64),
-            Value::Integer(limit as i32),
-        ])?;
-        let rows = stmt.query(&mut self.db.connection)?;
+        let rows = self.db.query(&format!(
+            "SELECT id, category, score, payload, updated_at FROM bench_records WHERE id >= {} ORDER BY id LIMIT {};",
+            start_id, limit
+        ))?;
         Ok(rows.rows.len())
     }
 
     fn insert_row(&mut self, row: &BenchRow) -> Result<()> {
-        let mut stmt = self.db.prepare(
-            "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
-        stmt.bind_all(vec![
-            Value::BigInt(row.id as i64),
-            Value::Text(row.category.clone()),
-            Value::BigInt(row.score),
-            Value::Text(row.payload.clone()),
-            Value::BigInt(row.updated_at),
-        ])?;
-        self.db.execute_prepared(&mut stmt)?;
+        self.db.execute(&format!(
+            "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES ({}, {}, {}, {}, {});",
+            row.id,
+            sql_string_literal(&row.category),
+            row.score,
+            sql_string_literal(&row.payload),
+            row.updated_at
+        ))?;
         Ok(())
     }
 
     fn update_row(&mut self, row: &BenchRow) -> Result<usize> {
-        let mut stmt = self.db.prepare(
-            "UPDATE bench_records SET score = ?2, payload = ?3, updated_at = ?4 WHERE id = ?1",
-        )?;
-        stmt.bind_all(vec![
-            Value::BigInt(row.id as i64),
-            Value::BigInt(row.score),
-            Value::Text(row.payload.clone()),
-            Value::BigInt(row.updated_at),
-        ])?;
-        let result = self.db.execute_prepared(&mut stmt)?;
+        let result = self.db.execute(&format!(
+            "UPDATE bench_records SET score = {}, payload = {}, updated_at = {} WHERE id = {};",
+            row.score,
+            sql_string_literal(&row.payload),
+            row.updated_at,
+            row.id
+        ))?;
         Ok(result.affected_rows)
     }
 
@@ -339,6 +324,10 @@ fn apply_hematite_durability(
     Ok(warnings)
 }
 
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 pub fn execute_operation(
     adapter: &mut dyn EngineAdapter,
     config: &BenchmarkConfig,
@@ -370,7 +359,7 @@ pub fn execute_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use benchmark_core::{BenchmarkConfig, LoadConfig, OperationMix, ScenarioConfig};
+    use benchmark_core::{BenchmarkConfig, EngineKind, LoadConfig, OperationMix, ScenarioConfig};
     use tempfile::tempdir;
 
     fn sqlite_config() -> BenchmarkConfig {
@@ -400,6 +389,23 @@ mod tests {
         let dir = tempdir()?;
         let mut adapter = SqliteAdapter::open(dir.path(), DurabilityPreset::Balanced)?;
         let config = sqlite_config();
+        adapter.prepare_dataset(&config)?;
+
+        assert_eq!(adapter.point_read(1)?, 1);
+        assert!(adapter.range_scan(1, 5)? >= 1);
+        adapter.insert_row(&make_row(&config, 51))?;
+        assert_eq!(adapter.update_row(&make_row(&config, 10))?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn hematite_adapter_supports_documented_sql_surface() -> Result<()> {
+        let dir = tempdir()?;
+        let mut adapter = HematiteAdapter::open(dir.path(), DurabilityPreset::Balanced)?;
+        let config = BenchmarkConfig {
+            engine: EngineKind::Hematite,
+            ..sqlite_config()
+        };
         adapter.prepare_dataset(&config)?;
 
         assert_eq!(adapter.point_read(1)?, 1);

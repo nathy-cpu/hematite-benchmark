@@ -9,145 +9,319 @@
   <body>
     <div class="shell">
       <header class="hero">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Embedded Database Stress Lab</p>
           <h1>Hematite vs SQLite</h1>
           <p class="lede">
-            Launch controlled benchmark runs, tune load in real time, and compare saved sessions on one dashboard.
+            Configure runs before launch, watch live behavior while they execute, and compare saved sessions with clearer charts and summaries.
           </p>
         </div>
         <div class="hero-card">
           <div><span>Server</span><strong id="server-status">Ready</strong></div>
-          <div><span>Runs</span><strong id="run-count">0</strong></div>
-          <div><span>Mode</span><strong>Isolated workers</strong></div>
+          <div><span>Total runs</span><strong id="run-count">0</strong></div>
+          <div><span>Active runs</span><strong id="active-run-count">0</strong></div>
         </div>
       </header>
 
-      <main class="layout">
-        <section class="panel">
-          <h2>New Run</h2>
-          <form id="run-form">
-            <div class="grid two">
-              <label>
-                <span>Run name</span>
-                <input name="run_name" value="baseline" required />
-              </label>
-              <label>
-                <span>Engine</span>
-                <select name="engine">
-                  <option value="hematite">Hematite</option>
-                  <option value="sqlite">SQLite</option>
-                </select>
-              </label>
-              <label>
-                <span>Durability</span>
-                <select name="durability">
-                  <option value="balanced">Balanced</option>
-                  <option value="safe">Safe</option>
-                  <option value="fast">Fast</option>
-                </select>
-              </label>
-              <label>
-                <span>Initial rows</span>
-                <input type="number" min="1" name="initial_rows" value="5000" />
-              </label>
-              <label>
-                <span>Payload size</span>
-                <input type="number" min="1" name="payload_size_bytes" value="256" />
-              </label>
-              <label>
-                <span>Categories</span>
-                <input type="number" min="1" name="category_count" value="32" />
-              </label>
-              <label>
-                <span>Range scan size</span>
-                <input type="number" min="1" name="range_scan_size" value="25" />
-              </label>
-              <label>
-                <span>Duration (s)</span>
-                <input type="number" min="1" name="duration_secs" value="30" />
-              </label>
-              <label>
-                <span>Concurrency</span>
-                <input type="number" min="1" name="concurrency" value="4" />
-              </label>
-              <label>
-                <span>Batch size</span>
-                <input type="number" min="1" name="batch_size" value="1" />
-              </label>
-              <label>
-                <span>Sample interval (ms)</span>
-                <input type="number" min="100" step="100" name="sample_interval_ms" value="1000" />
-              </label>
-            </div>
-            <div class="mix-grid">
-              <label><span>Point reads %</span><input type="number" min="0" max="100" name="point_reads" value="50" /></label>
-              <label><span>Range scans %</span><input type="number" min="0" max="100" name="range_scans" value="10" /></label>
-              <label><span>Inserts %</span><input type="number" min="0" max="100" name="inserts" value="20" /></label>
-              <label><span>Updates %</span><input type="number" min="0" max="100" name="updates" value="20" /></label>
-            </div>
-            <label>
-              <span>Ramp schedule JSON</span>
-              <textarea name="ramp_schedule" rows="4">[]</textarea>
-            </label>
-            <button type="submit">Start Run</button>
-          </form>
+      <nav class="page-nav" aria-label="Primary">
+        <a href="/setup" data-page-link="setup">Setup</a>
+        <a href="/dashboard" data-page-link="dashboard">Dashboard</a>
+        <a href="/history" data-page-link="history">History</a>
+      </nav>
+
+      <main>
+        <section id="page-setup" class="page">
+          <div class="page-grid setup-grid">
+            <section class="panel">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Before You Run</p>
+                  <h2>Initial Setup</h2>
+                </div>
+                <p class="hint">This page is for choosing the workload, dataset shape, and how long the run should last.</p>
+              </div>
+
+              <form id="run-form">
+                <div class="grid two">
+                  <label>
+                    <span>Run name</span>
+                    <input name="run_name" value="baseline" required />
+                  </label>
+                  <label>
+                    <span>Engine</span>
+                    <select name="engine">
+                      <option value="hematite">Hematite</option>
+                      <option value="sqlite">SQLite</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Durability</span>
+                    <select name="durability">
+                      <option value="balanced">Balanced</option>
+                      <option value="safe">Safe</option>
+                      <option value="fast">Fast</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Run profile</span>
+                    <select name="test_profile" id="test-profile">
+                      <option value="quick">Quick check</option>
+                      <option value="benchmark">Benchmark run</option>
+                      <option value="stability">Stability soak</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="panel inset-panel">
+                  <div class="section-head compact">
+                    <div>
+                      <p class="section-kicker">Run Length</p>
+                      <h3>Duration Settings</h3>
+                    </div>
+                    <p class="hint" id="duration-help">
+                      Stability runs are meant for longer observation windows, not just peak throughput snapshots.
+                    </p>
+                  </div>
+                  <div class="grid three">
+                    <label>
+                      <span>Duration value</span>
+                      <input type="number" min="1" name="duration_value" value="30" />
+                    </label>
+                    <label>
+                      <span>Duration unit</span>
+                      <select name="duration_unit" id="duration-unit">
+                        <option value="seconds">Seconds</option>
+                        <option value="minutes">Minutes</option>
+                        <option value="hours">Hours</option>
+                      </select>
+                    </label>
+                    <div class="duration-preview">
+                      <span>Run time preview</span>
+                      <strong id="duration-preview">30 seconds</strong>
+                    </div>
+                  </div>
+                  <div class="preset-row">
+                    <button type="button" class="ghost" data-duration-preset="quick">30 sec quick check</button>
+                    <button type="button" class="ghost" data-duration-preset="benchmark">5 min benchmark</button>
+                    <button type="button" class="ghost" data-duration-preset="stability">30 min stability</button>
+                  </div>
+                </div>
+
+                <div class="grid three">
+                  <label>
+                    <span>Initial rows</span>
+                    <input type="number" min="1" name="initial_rows" value="5000" />
+                  </label>
+                  <label>
+                    <span>Payload size</span>
+                    <input type="number" min="1" name="payload_size_bytes" value="256" />
+                  </label>
+                  <label>
+                    <span>Categories</span>
+                    <input type="number" min="1" name="category_count" value="32" />
+                  </label>
+                  <label>
+                    <span>Range scan size</span>
+                    <input type="number" min="1" name="range_scan_size" value="25" />
+                  </label>
+                  <label>
+                    <span>Concurrency</span>
+                    <input type="number" min="1" name="concurrency" value="4" />
+                  </label>
+                  <label>
+                    <span>Batch size</span>
+                    <input type="number" min="1" name="batch_size" value="1" />
+                  </label>
+                  <label>
+                    <span>Sample interval (ms)</span>
+                    <input type="number" min="100" step="100" name="sample_interval_ms" value="1000" />
+                  </label>
+                </div>
+
+                <div class="mix-grid">
+                  <label><span>Point reads %</span><input type="number" min="0" max="100" name="point_reads" value="50" /></label>
+                  <label><span>Range scans %</span><input type="number" min="0" max="100" name="range_scans" value="10" /></label>
+                  <label><span>Inserts %</span><input type="number" min="0" max="100" name="inserts" value="20" /></label>
+                  <label><span>Updates %</span><input type="number" min="0" max="100" name="updates" value="20" /></label>
+                </div>
+
+                <label>
+                  <span>Ramp schedule JSON</span>
+                  <textarea name="ramp_schedule" rows="4">[]</textarea>
+                </label>
+
+                <div class="button-row">
+                  <button type="submit">Start Run</button>
+                  <button type="button" class="ghost" id="jump-to-dashboard">Open Dashboard</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">What This Means</p>
+                  <h2>Setup Summary</h2>
+                </div>
+              </div>
+              <div id="setup-summary" class="summary-list"></div>
+
+              <div class="panel inset-panel">
+                <div class="section-head compact">
+                  <div>
+                    <p class="section-kicker">Recent Activity</p>
+                    <h3>Latest Runs</h3>
+                  </div>
+                </div>
+                <div id="recent-runs" class="run-list compact-list"></div>
+              </div>
+            </section>
+          </div>
         </section>
 
-        <section class="panel">
-          <h2>Live Controls</h2>
-          <div class="control-row">
-            <label>
-              <span>Active run</span>
-              <select id="active-run-select"></select>
-            </label>
-            <div class="button-row">
-              <button id="pause-run" type="button">Pause</button>
-              <button id="resume-run" type="button">Resume</button>
-              <button id="stop-run" type="button" class="danger">Stop</button>
-            </div>
+        <section id="page-dashboard" class="page">
+          <div class="page-grid dashboard-grid">
+            <section class="panel">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Live Monitoring</p>
+                  <h2>Dashboard</h2>
+                </div>
+                <p class="hint">Follow one active run closely and adjust the load while the charts update in real time.</p>
+              </div>
+              <div class="grid two">
+                <label>
+                  <span>Focused active run</span>
+                  <select id="active-run-select"></select>
+                </label>
+                <div class="button-row align-end">
+                  <button id="pause-run" type="button">Pause</button>
+                  <button id="resume-run" type="button">Resume</button>
+                  <button id="stop-run" type="button" class="danger">Stop</button>
+                </div>
+              </div>
+              <div id="dashboard-empty" class="empty-state">
+                No active runs yet. Start a run from the setup page and it will appear here.
+              </div>
+              <div id="dashboard-summary" class="summary-cards"></div>
+              <div id="dashboard-warnings" class="warning-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">While Running</p>
+                  <h2>Adjust Load</h2>
+                </div>
+              </div>
+              <div class="grid two">
+                <label>
+                  <span>Concurrency</span>
+                  <input id="live-concurrency" type="range" min="1" max="32" value="4" />
+                </label>
+                <div class="inline-metric">Current value: <strong id="live-concurrency-value">4</strong></div>
+              </div>
+              <div class="mix-grid">
+                <label><span>Point reads %</span><input id="live-point" type="number" min="0" max="100" value="50" /></label>
+                <label><span>Range scans %</span><input id="live-range" type="number" min="0" max="100" value="10" /></label>
+                <label><span>Inserts %</span><input id="live-insert" type="number" min="0" max="100" value="20" /></label>
+                <label><span>Updates %</span><input id="live-update" type="number" min="0" max="100" value="20" /></label>
+              </div>
+              <div class="button-row">
+                <button id="apply-live-controls" type="button">Apply live settings</button>
+              </div>
+              <p class="hint">Use this page for active runs only. Completed runs move into the history page for comparison.</p>
+            </section>
           </div>
-          <div class="grid two">
-            <label>
-              <span>Concurrency</span>
-              <input id="live-concurrency" type="range" min="1" max="32" value="4" />
-            </label>
-            <div class="inline-metric">Current value: <strong id="live-concurrency-value">4</strong></div>
-          </div>
-          <div class="mix-grid">
-            <label><span>Point reads %</span><input id="live-point" type="number" min="0" max="100" value="50" /></label>
-            <label><span>Range scans %</span><input id="live-range" type="number" min="0" max="100" value="10" /></label>
-            <label><span>Inserts %</span><input id="live-insert" type="number" min="0" max="100" value="20" /></label>
-            <label><span>Updates %</span><input id="live-update" type="number" min="0" max="100" value="20" /></label>
-          </div>
-          <div class="button-row">
-            <button id="apply-live-controls" type="button">Apply live settings</button>
-          </div>
-          <p class="hint">For saved runs, use the run list below to overlay charts. For active runs, the dashboard streams new samples automatically.</p>
+
+          <section class="charts">
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Reads / Writes Per Second</h2>
+                <p class="hint">Axes show elapsed time and throughput scale. Stats include current, min, max, average, and median.</p>
+              </div>
+              <canvas id="dashboard-throughput-chart" width="980" height="320"></canvas>
+              <div id="dashboard-throughput-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Memory Usage</h2>
+              </div>
+              <canvas id="dashboard-memory-chart" width="980" height="300"></canvas>
+              <div id="dashboard-memory-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Disk I/O</h2>
+              </div>
+              <canvas id="dashboard-io-chart" width="980" height="300"></canvas>
+              <div id="dashboard-io-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Disk Space Usage</h2>
+              </div>
+              <canvas id="dashboard-disk-chart" width="980" height="300"></canvas>
+              <div id="dashboard-disk-stats" class="series-stats"></div>
+            </article>
+          </section>
         </section>
 
-        <section class="panel">
-          <h2>Run History</h2>
-          <div id="run-list" class="run-list"></div>
-        </section>
+        <section id="page-history" class="page">
+          <div class="page-grid history-grid">
+            <section class="panel">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Past Sessions</p>
+                  <h2>Run History</h2>
+                </div>
+                <p class="hint">Select one or more completed runs to overlay them on the comparison charts.</p>
+              </div>
+              <div id="history-run-list" class="run-list"></div>
+            </section>
 
-        <section class="charts">
-          <article class="panel chart-panel">
-            <h2>Reads / Writes Per Second</h2>
-            <canvas id="throughput-chart" width="900" height="280"></canvas>
-          </article>
-          <article class="panel chart-panel">
-            <h2>Memory Usage</h2>
-            <canvas id="memory-chart" width="900" height="260"></canvas>
-          </article>
-          <article class="panel chart-panel">
-            <h2>Disk I/O</h2>
-            <canvas id="io-chart" width="900" height="260"></canvas>
-          </article>
-          <article class="panel chart-panel">
-            <h2>Disk Space Usage</h2>
-            <canvas id="disk-chart" width="900" height="260"></canvas>
-          </article>
+            <section class="panel">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Selected Runs</p>
+                  <h2>Comparison Summary</h2>
+                </div>
+              </div>
+              <div id="history-summary" class="summary-cards"></div>
+            </section>
+          </div>
+
+          <section class="charts">
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Reads / Writes Per Second</h2>
+              </div>
+              <canvas id="history-throughput-chart" width="980" height="320"></canvas>
+              <div id="history-throughput-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Memory Usage</h2>
+              </div>
+              <canvas id="history-memory-chart" width="980" height="300"></canvas>
+              <div id="history-memory-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Disk I/O</h2>
+              </div>
+              <canvas id="history-io-chart" width="980" height="300"></canvas>
+              <div id="history-io-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
+                <h2>Disk Space Usage</h2>
+              </div>
+              <canvas id="history-disk-chart" width="980" height="300"></canvas>
+              <div id="history-disk-stats" class="series-stats"></div>
+            </article>
+          </section>
         </section>
       </main>
     </div>
