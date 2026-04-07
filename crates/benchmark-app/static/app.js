@@ -18,6 +18,13 @@ const chartDefinitions = [
     ],
   },
   {
+    key: "latency",
+    metrics: [
+      { key: "p50_latency_ms", label: "p50 latency", format: formatLatencyMs },
+      { key: "p95_latency_ms", label: "p95 latency", format: formatLatencyMs },
+    ],
+  },
+  {
     key: "memory",
     metrics: [{ key: "rss_bytes", label: "memory", format: formatBytes }],
   },
@@ -151,37 +158,60 @@ function setupDurationControls() {
   applyDurationPreset("quick");
 }
 
-function formConfig(form) {
-  const rampValue = form.ramp_schedule.value.trim();
+function parseRampSchedule(raw, options = {}) {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { value: [], error: "" };
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) {
+      throw new Error("Ramp schedule must be a JSON array.");
+    }
+    return { value: parsed, error: "" };
+  } catch (error) {
+    if (options.strict) {
+      throw new Error(`Ramp schedule must be valid JSON. ${error.message}`);
+    }
+    return { value: [], error: "Ramp schedule must be valid JSON before launch." };
+  }
+}
+
+function readFormState(form, options = {}) {
+  const rampResult = parseRampSchedule(form.ramp_schedule.value, options);
   return {
-    run_name: form.run_name.value.trim(),
-    engine: form.engine.value,
-    durability: form.durability.value,
-    scenario: {
-      initial_rows: Number(form.initial_rows.value),
-      payload_size_bytes: Number(form.payload_size_bytes.value),
-      category_count: Number(form.category_count.value),
-      range_scan_size: Number(form.range_scan_size.value),
-    },
-    load: {
-      concurrency: Number(form.concurrency.value),
-      batch_size: Number(form.batch_size.value),
-      duration_secs: durationToSeconds(form.duration_value.value, form.duration_unit.value),
-      sample_interval_ms: Number(form.sample_interval_ms.value),
-      mix: {
-        point_reads: Number(form.point_reads.value),
-        range_scans: Number(form.range_scans.value),
-        inserts: Number(form.inserts.value),
-        updates: Number(form.updates.value),
+    config: {
+      run_name: form.run_name.value.trim(),
+      engine: form.engine.value,
+      durability: form.durability.value,
+      scenario: {
+        initial_rows: Number(form.initial_rows.value),
+        payload_size_bytes: Number(form.payload_size_bytes.value),
+        category_count: Number(form.category_count.value),
+        range_scan_size: Number(form.range_scan_size.value),
       },
+      load: {
+        concurrency: Number(form.concurrency.value),
+        batch_size: Number(form.batch_size.value),
+        duration_secs: durationToSeconds(form.duration_value.value, form.duration_unit.value),
+        sample_interval_ms: Number(form.sample_interval_ms.value),
+        mix: {
+          point_reads: Number(form.point_reads.value),
+          range_scans: Number(form.range_scans.value),
+          inserts: Number(form.inserts.value),
+          updates: Number(form.updates.value),
+        },
+      },
+      ramp_schedule: rampResult.value,
     },
-    ramp_schedule: rampValue ? JSON.parse(rampValue) : [],
+    rampError: rampResult.error,
   };
 }
 
 function renderSetupSummary() {
   const form = document.getElementById("run-form");
-  const config = formConfig(form);
+  const validation = document.getElementById("setup-validation");
+  const { config, rampError } = readFormState(form);
   const durationText = humanizeDuration(config.load.duration_secs);
   document.getElementById("duration-preview").textContent = durationText;
 
@@ -217,6 +247,17 @@ function renderSetupSummary() {
       <strong>${totalMix}%</strong>
     </div>
   `;
+
+  const issues = [];
+  if (rampError) {
+    issues.push({ text: rampError, error: true });
+  }
+  if (totalMix !== 100) {
+    issues.push({ text: `Workload mix currently adds up to ${totalMix}%, not 100%.`, error: true });
+  }
+  validation.innerHTML = issues
+    .map((issue) => `<div class="warning-item${issue.error ? " is-error" : ""}">${issue.text}</div>`)
+    .join("");
 }
 
 function renderRecentRuns() {
@@ -236,7 +277,7 @@ function renderRecentRuns() {
         <strong>${run.run_name}</strong>
         <div class="run-meta">${run.engine} • ${new Date(run.started_at_ms).toLocaleString()}</div>
       </div>
-      <span class="status-pill">${run.status}</span>
+      <span class="${statusPillClass(run.status)}">${run.status}</span>
     `;
     container.appendChild(item);
   });
@@ -285,15 +326,15 @@ function renderActiveRunSelect() {
 }
 
 function syncLiveControlsFromDetail(detail) {
-  if (!detail?.config?.load) {
+  const load = detail?.effective_config?.load || detail?.config?.load;
+  if (!load) {
     return;
   }
-  document.getElementById("live-concurrency").value = detail.config.load.concurrency;
-  document.getElementById("live-concurrency-value").textContent = detail.config.load.concurrency;
-  document.getElementById("live-point").value = detail.config.load.mix.point_reads;
-  document.getElementById("live-range").value = detail.config.load.mix.range_scans;
-  document.getElementById("live-insert").value = detail.config.load.mix.inserts;
-  document.getElementById("live-update").value = detail.config.load.mix.updates;
+  syncConcurrencyControls(load.concurrency);
+  document.getElementById("live-point").value = load.mix.point_reads;
+  document.getElementById("live-range").value = load.mix.range_scans;
+  document.getElementById("live-insert").value = load.mix.inserts;
+  document.getElementById("live-update").value = load.mix.updates;
 }
 
 function renderHistoryList() {
@@ -315,7 +356,7 @@ function renderHistoryList() {
         <strong>${run.run_name}</strong>
         <div class="run-meta">${run.engine} • ${new Date(run.started_at_ms).toLocaleString()}</div>
       </div>
-      <span class="status-pill">${run.status}</span>
+      <span class="${statusPillClass(run.status)}">${run.status}</span>
     `;
     row.querySelector("input").addEventListener("change", async (event) => {
       if (event.target.checked) {
@@ -373,18 +414,42 @@ function attachStream(runId) {
   const source = new EventSource(`/api/runs/${runId}/stream`);
   source.onmessage = (event) => {
     const payload = JSON.parse(event.data);
-    const detail = state.runDetails.get(runId) || { samples: [], warnings: [], config: null, run_id: runId };
+    const detail = state.runDetails.get(runId) || {
+      samples: [],
+      warnings: [],
+      error_messages: [],
+      control_events: [],
+      config: null,
+      effective_config: null,
+      run_id: runId,
+    };
     if (payload.kind === "sample") {
       detail.samples.push(payload.sample);
     }
+    if (payload.kind === "control_applied") {
+      detail.control_events = [...(detail.control_events || []), payload.event];
+      detail.effective_config = payload.effective_config;
+      if (runId === state.activeRunId) {
+        syncLiveControlsFromDetail(detail);
+      }
+    }
     if (payload.kind === "finished") {
       detail.summary = payload.summary;
+      detail.effective_config = payload.summary.final_config || detail.effective_config;
+      detail.control_events = payload.summary.control_events || detail.control_events || [];
+      detail.error_messages = payload.summary.error_messages || [];
       source.close();
       state.eventSources.delete(runId);
       refreshRuns();
     }
     if (payload.kind === "ready") {
       detail.warnings = payload.warnings || [];
+    }
+    if (payload.kind === "failed") {
+      detail.error_messages = [...(detail.error_messages || []), payload.message];
+      source.close();
+      state.eventSources.delete(runId);
+      refreshRuns();
     }
     state.runDetails.set(runId, detail);
     if (runId === state.activeRunId) {
@@ -426,22 +491,29 @@ function renderDashboardSummary() {
   const durationSecs = last && detail.samples[0]
     ? (last.timestamp_ms - detail.samples[0].timestamp_ms) / 1000
     : 0;
-  const configuredDuration = detail.config?.load?.duration_secs || run.summary?.config?.load?.duration_secs || 0;
+  const configuredDuration =
+    detail.effective_config?.load?.duration_secs ||
+    detail.config?.load?.duration_secs ||
+    run.summary?.final_config?.load?.duration_secs ||
+    run.summary?.config?.load?.duration_secs ||
+    0;
   summary.innerHTML = `
     <div class="summary-card"><span>Run</span><strong>${run.run_name}</strong></div>
     <div class="summary-card"><span>Status</span><strong>${run.status}</strong></div>
     <div class="summary-card"><span>Elapsed</span><strong>${humanizeDuration(Math.max(1, Math.round(durationSecs || configuredDuration)))}</strong></div>
     <div class="summary-card"><span>Writes/s</span><strong>${formatOpsPerSecond(last?.writes_per_sec || 0)}</strong></div>
     <div class="summary-card"><span>Reads/s</span><strong>${formatOpsPerSecond(last?.reads_per_sec || 0)}</strong></div>
+    <div class="summary-card"><span>P95 latency</span><strong>${formatLatencyMs(last?.p95_latency_ms || 0)}</strong></div>
     <div class="summary-card"><span>Memory</span><strong>${formatBytes(last?.rss_bytes || 0)}</strong></div>
     <div class="summary-card"><span>Disk I/O</span><strong>${formatBytesPerSecond((last?.disk_read_bytes_per_sec || 0) + (last?.disk_write_bytes_per_sec || 0))}</strong></div>
     <div class="summary-card"><span>Disk usage</span><strong>${formatBytes(last?.disk_usage_bytes || 0)}</strong></div>
+    <div class="summary-card"><span>Total errors</span><strong>${formatInteger(totalSampleErrors(detail.samples || []))}</strong></div>
   `;
 
-  const warningItems = detail.warnings || run.summary?.warnings || [];
-  warnings.innerHTML = warningItems
-    .map((warning) => `<div class="warning-item">${warning}</div>`)
-    .join("");
+  warnings.innerHTML = renderMessageItems(
+    [...(detail.warnings || run.summary?.warnings || [])],
+    [...(detail.error_messages || run.summary?.error_messages || [])],
+  );
 }
 
 function renderHistorySummary() {
@@ -457,12 +529,24 @@ function renderHistorySummary() {
 
   container.innerHTML = details.map(({ run, detail }) => {
     const summary = run.summary || detail.summary;
+    const effectiveConfig = summary?.final_config || detail.effective_config || detail.config;
+    const avgP95 = computeStats(detail.samples || [], "p95_latency_ms");
+    const totalErrors = totalSampleErrors(detail.samples || []);
     return `
       <div class="summary-card">
         <span>${run.run_name} • ${run.engine}</span>
-        <strong>${summary ? formatOpsPerSecond(summary.avg_writes_per_sec) : "No summary"}</strong>
+        <strong>${summary ? formatOpsPerSecond(summary.avg_writes_per_sec) : "No summary yet"}</strong>
         <div class="run-meta">avg writes/s</div>
-        <div class="run-meta">Peak RSS: ${summary ? formatBytes(summary.peak_rss_bytes) : "n/a"}</div>
+        <span class="${statusPillClass(run.status)}">${run.status}</span>
+        <div class="metric-grid full">
+          <div><span>Avg reads</span><strong>${summary ? formatOpsPerSecond(summary.avg_reads_per_sec) : "n/a"}</strong></div>
+          <div><span>Avg p95</span><strong>${avgP95 ? formatLatencyMs(avgP95.average) : "n/a"}</strong></div>
+          <div><span>Errors</span><strong>${formatInteger(totalErrors)}</strong></div>
+          <div><span>Peak RSS</span><strong>${summary ? formatBytes(summary.peak_rss_bytes) : "n/a"}</strong></div>
+          <div><span>Peak disk</span><strong>${summary ? formatBytes(summary.peak_disk_usage_bytes) : "n/a"}</strong></div>
+          <div><span>Final concurrency</span><strong>${formatInteger(effectiveConfig?.load?.concurrency || 0)}</strong></div>
+        </div>
+        <div class="run-meta">Final mix: ${formatMix(effectiveConfig?.load?.mix)}</div>
       </div>
     `;
   }).join("");
@@ -483,9 +567,32 @@ function renderHistoryCharts() {
 
 function renderChartGroup(prefix, runs) {
   chartDefinitions.forEach((definition) => {
+    renderChartLegend(`${prefix}-${definition.key}-legend`, runs, definition.metrics);
     drawChart(`${prefix}-${definition.key}-chart`, runs, definition.metrics);
     renderSeriesStats(`${prefix}-${definition.key}-stats`, runs, definition.metrics);
   });
+}
+
+function renderChartLegend(containerId, runs, metrics) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    return;
+  }
+  let seriesIndex = 0;
+  const items = [];
+  runs.forEach((run) => {
+    metrics.forEach((metric) => {
+      const color = colors[seriesIndex % colors.length];
+      items.push(`
+        <div class="legend-item">
+          <span class="legend-swatch" style="background:${color}"></span>
+          <span>${run.config?.run_name || run.run_id} • ${metric.label}</span>
+        </div>
+      `);
+      seriesIndex += 1;
+    });
+  });
+  container.innerHTML = items.join("");
 }
 
 function drawChart(canvasId, runs, metrics) {
@@ -493,7 +600,7 @@ function drawChart(canvasId, runs, metrics) {
   const ctx = canvas.getContext("2d");
   const width = canvas.width;
   const height = canvas.height;
-  const margin = { top: 28, right: 96, bottom: 38, left: 86 };
+  const margin = { top: 28, right: 28, bottom: 38, left: 86 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
 
@@ -603,13 +710,6 @@ function drawChart(canvasId, runs, metrics) {
       ctx.beginPath();
       ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
       ctx.fill();
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(
-        `${run.config?.run_name || run.run_id} ${metric.label}: ${metric.format(last[metric.key] || 0)}`,
-        Math.min(lastX + 8, width - margin.right + 8),
-        Math.max(margin.top + 12, Math.min(lastY, height - margin.bottom - 12)),
-      );
       seriesIndex += 1;
     });
   });
@@ -649,22 +749,26 @@ function renderSeriesStats(containerId, runs, metrics) {
 
 function computeStats(samples, key) {
   const values = samples
-    .map((sample) => Number(sample[key] || 0))
-    .filter((value) => Number.isFinite(value));
+    .map((sample) => ({
+      value: Number(sample[key] || 0),
+      durationMs: Math.max(1, Number(sample.sample_duration_ms) || 0),
+    }))
+    .filter((entry) => Number.isFinite(entry.value));
   if (!values.length) {
     return null;
   }
-  const sorted = [...values].sort((a, b) => a - b);
+  const sorted = values.map((entry) => entry.value).sort((a, b) => a - b);
   const count = values.length;
   const median = count % 2 === 0
     ? (sorted[count / 2 - 1] + sorted[count / 2]) / 2
     : sorted[Math.floor(count / 2)];
-  const sum = values.reduce((total, value) => total + value, 0);
+  const totalDurationMs = values.reduce((total, entry) => total + entry.durationMs, 0);
+  const weightedSum = values.reduce((total, entry) => total + (entry.value * entry.durationMs), 0);
   return {
-    current: values.at(-1),
+    current: values.at(-1).value,
     min: sorted[0],
     max: sorted.at(-1),
-    average: sum / count,
+    average: weightedSum / totalDurationMs,
     median,
     count,
   };
@@ -695,7 +799,7 @@ function setupForm() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      const config = formConfig(form);
+      const { config } = readFormState(form, { strict: true });
       const mixTotal =
         config.load.mix.point_reads +
         config.load.mix.range_scans +
@@ -723,6 +827,7 @@ function setupForm() {
 function setupControls() {
   const runSelect = document.getElementById("active-run-select");
   const concurrency = document.getElementById("live-concurrency");
+  const concurrencyInput = document.getElementById("live-concurrency-input");
 
   runSelect.addEventListener("change", async () => {
     state.activeRunId = runSelect.value;
@@ -735,7 +840,10 @@ function setupControls() {
   });
 
   concurrency.addEventListener("input", () => {
-    document.getElementById("live-concurrency-value").textContent = concurrency.value;
+    syncConcurrencyControls(concurrency.value);
+  });
+  concurrencyInput.addEventListener("input", () => {
+    syncConcurrencyControls(concurrencyInput.value);
   });
 
   document.getElementById("pause-run").addEventListener("click", async () => {
@@ -767,7 +875,7 @@ function setupControls() {
     }
     await sendControl(state.activeRunId, {
       kind: "update_concurrency",
-      concurrency: Number(concurrency.value),
+      concurrency: Number(concurrencyInput.value),
     });
     await sendControl(state.activeRunId, {
       kind: "update_mix",
@@ -794,6 +902,10 @@ function formatOpsPerSecond(value) {
   return `${formatDecimal(value, 1)}/s`;
 }
 
+function formatLatencyMs(value) {
+  return `${formatDecimal(value, value < 10 ? 2 : 1)} ms`;
+}
+
 function formatBytes(value) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let numeric = Number(value) || 0;
@@ -807,6 +919,38 @@ function formatBytes(value) {
 
 function formatBytesPerSecond(value) {
   return `${formatBytes(value)}/s`;
+}
+
+function syncConcurrencyControls(value) {
+  const range = document.getElementById("live-concurrency");
+  const input = document.getElementById("live-concurrency-input");
+  const numeric = Math.max(1, Number(value) || 1);
+  range.max = String(Math.max(32, numeric));
+  range.value = String(numeric);
+  input.value = String(numeric);
+  document.getElementById("live-concurrency-value").textContent = String(numeric);
+}
+
+function statusPillClass(status) {
+  return `status-pill is-${status || "pending"}`;
+}
+
+function renderMessageItems(warnings, errors) {
+  return [
+    ...warnings.map((text) => `<div class="warning-item">${text}</div>`),
+    ...errors.map((text) => `<div class="warning-item is-error">${text}</div>`),
+  ].join("");
+}
+
+function totalSampleErrors(samples) {
+  return samples.reduce((total, sample) => total + (Number(sample.error_count) || 0), 0);
+}
+
+function formatMix(mix) {
+  if (!mix) {
+    return "n/a";
+  }
+  return `${mix.point_reads}/${mix.range_scans}/${mix.inserts}/${mix.updates}`;
 }
 
 async function boot() {

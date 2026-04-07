@@ -1,49 +1,86 @@
-use crate::engine::{EngineAdapter, execute_operation, logical_bytes_for_operation, open_engine};
+use crate::engine::{
+    EngineAdapter, execute_operation, logical_bytes_for_operation, open_engine,
+};
 use crate::metrics::{IoCounters, current_io_counters, current_rss_bytes, dir_size_bytes};
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
-    ArtifactPaths, BenchmarkConfig, ControlMessage, MetricSample, OperationKind, OperationMix,
-    RunAggregate, RunStatus, RunSummary, SampleAccumulator, WorkerEvent,
+    AppliedControlEvent, ArtifactPaths, BenchmarkConfig, ControlMessage, ControlSource,
+    MetricSample, OperationKind, OperationMix, RunAggregate, RunStatus, RunSummary,
+    SampleAccumulator, WorkerEvent,
 };
 use rand::Rng;
 use serde_json::Deserializer;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const LOCK_RETRY_TIMEOUT_MS: u64 = 500;
+const LOCK_RETRY_SLEEP_MS: u64 = 10;
+const MAX_ERROR_MESSAGES: usize = 8;
+
 #[derive(Clone)]
 struct RuntimeControl {
     paused: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    manual_stop: Arc<AtomicBool>,
     concurrency: Arc<AtomicUsize>,
     mix: Arc<Mutex<OperationMix>>,
+    effective_config: Arc<Mutex<BenchmarkConfig>>,
+    control_events: Arc<Mutex<Vec<AppliedControlEvent>>>,
 }
 
 impl RuntimeControl {
-    fn new(initial_concurrency: usize, mix: OperationMix) -> Self {
+    fn new(initial_config: BenchmarkConfig) -> Self {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
-            concurrency: Arc::new(AtomicUsize::new(initial_concurrency)),
-            mix: Arc::new(Mutex::new(mix)),
+            manual_stop: Arc::new(AtomicBool::new(false)),
+            concurrency: Arc::new(AtomicUsize::new(initial_config.load.concurrency)),
+            mix: Arc::new(Mutex::new(initial_config.load.mix.clone())),
+            effective_config: Arc::new(Mutex::new(initial_config)),
+            control_events: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    fn apply(&self, message: ControlMessage) -> Result<()> {
-        match message {
-            ControlMessage::Pause => self.paused.store(true, Ordering::Relaxed),
-            ControlMessage::Resume => self.paused.store(false, Ordering::Relaxed),
-            ControlMessage::Stop => self.stop.store(true, Ordering::Relaxed),
+    fn apply(
+        &self,
+        message: ControlMessage,
+        source: ControlSource,
+    ) -> Result<Option<(AppliedControlEvent, BenchmarkConfig)>> {
+        match &message {
+            ControlMessage::Pause => {
+                self.paused.store(true, Ordering::Relaxed);
+                Ok(None)
+            }
+            ControlMessage::Resume => {
+                self.paused.store(false, Ordering::Relaxed);
+                Ok(None)
+            }
+            ControlMessage::Stop => {
+                if source == ControlSource::Interactive {
+                    self.manual_stop.store(true, Ordering::Relaxed);
+                }
+                self.stop.store(true, Ordering::Relaxed);
+                Ok(None)
+            }
             ControlMessage::UpdateConcurrency { concurrency } => {
-                if concurrency == 0 {
+                if *concurrency == 0 {
                     bail!("concurrency must be greater than zero");
                 }
-                self.concurrency.store(concurrency, Ordering::Relaxed);
+                self.concurrency.store(*concurrency, Ordering::Relaxed);
+                let mut effective_config = self
+                    .effective_config
+                    .lock()
+                    .expect("effective config lock poisoned");
+                effective_config.load.concurrency = *concurrency;
+                Ok(Some(
+                    self.record_control(message, source, effective_config.clone()),
+                ))
             }
             ControlMessage::UpdateMix {
                 point_reads,
@@ -52,41 +89,136 @@ impl RuntimeControl {
                 updates,
             } => {
                 let mix = OperationMix {
-                    point_reads,
-                    range_scans,
-                    inserts,
-                    updates,
+                    point_reads: *point_reads,
+                    range_scans: *range_scans,
+                    inserts: *inserts,
+                    updates: *updates,
                 };
                 mix.validate().map_err(anyhow::Error::msg)?;
-                *self.mix.lock().expect("mix lock poisoned") = mix;
+                *self.mix.lock().expect("mix lock poisoned") = mix.clone();
+                let mut effective_config = self
+                    .effective_config
+                    .lock()
+                    .expect("effective config lock poisoned");
+                effective_config.load.mix = mix;
+                Ok(Some(
+                    self.record_control(message, source, effective_config.clone()),
+                ))
             }
             ControlMessage::ApplyPhase { phase } => {
                 if let Some(concurrency) = phase.concurrency {
-                    self.apply(ControlMessage::UpdateConcurrency { concurrency })?;
+                    if concurrency == 0 {
+                        bail!("concurrency must be greater than zero");
+                    }
+                    self.concurrency.store(concurrency, Ordering::Relaxed);
                 }
-                if let Some(mix) = phase.mix {
-                    self.apply(ControlMessage::UpdateMix {
-                        point_reads: mix.point_reads,
-                        range_scans: mix.range_scans,
-                        inserts: mix.inserts,
-                        updates: mix.updates,
-                    })?;
+                if let Some(mix) = &phase.mix {
+                    mix.validate().map_err(anyhow::Error::msg)?;
+                    *self.mix.lock().expect("mix lock poisoned") = mix.clone();
                 }
+                let mut effective_config = self
+                    .effective_config
+                    .lock()
+                    .expect("effective config lock poisoned");
+                effective_config.apply_phase(phase);
+                Ok(Some(
+                    self.record_control(message, source, effective_config.clone()),
+                ))
             }
         }
-        Ok(())
+    }
+
+    fn current_mix(&self) -> OperationMix {
+        self.mix.lock().expect("mix lock poisoned").clone()
+    }
+
+    fn effective_config(&self) -> BenchmarkConfig {
+        self.effective_config
+            .lock()
+            .expect("effective config lock poisoned")
+            .clone()
+    }
+
+    fn control_events(&self) -> Vec<AppliedControlEvent> {
+        self.control_events
+            .lock()
+            .expect("control events lock poisoned")
+            .clone()
+    }
+
+    fn manual_stop_requested(&self) -> bool {
+        self.manual_stop.load(Ordering::Relaxed)
+    }
+
+    fn record_control(
+        &self,
+        control: ControlMessage,
+        source: ControlSource,
+        effective_config: BenchmarkConfig,
+    ) -> (AppliedControlEvent, BenchmarkConfig) {
+        let event = AppliedControlEvent {
+            timestamp_ms: now_ms(),
+            source,
+            control,
+        };
+        self.control_events
+            .lock()
+            .expect("control events lock poisoned")
+            .push(event.clone());
+        (event, effective_config)
+    }
+}
+
+#[derive(Clone, Default)]
+struct RuntimeErrors {
+    total: Arc<AtomicU64>,
+    messages: Arc<Mutex<Vec<String>>>,
+}
+
+impl RuntimeErrors {
+    fn record(&self, message: impl Into<String>) {
+        let message = message.into();
+        self.total.fetch_add(1, Ordering::Relaxed);
+        let mut messages = self.messages.lock().expect("error messages lock poisoned");
+        if messages.len() >= MAX_ERROR_MESSAGES || messages.iter().any(|existing| existing == &message)
+        {
+            return;
+        }
+        messages.push(message);
+    }
+
+    fn count(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+
+    fn messages(&self) -> Vec<String> {
+        self.messages
+            .lock()
+            .expect("error messages lock poisoned")
+            .clone()
     }
 }
 
 pub fn run_worker_from_args() -> Result<()> {
     let args = WorkerArgs::parse(env::args().skip(1).collect())?;
-    let config_text = fs::read_to_string(&args.config)
-        .with_context(|| format!("failed to read config file {}", args.config.display()))?;
-    let config: BenchmarkConfig = serde_json::from_str(&config_text)?;
-    config.validate().map_err(anyhow::Error::msg)?;
+    let result = (|| -> Result<()> {
+        let config_text = fs::read_to_string(&args.config)
+            .with_context(|| format!("failed to read config file {}", args.config.display()))?;
+        let config: BenchmarkConfig = serde_json::from_str(&config_text)?;
+        config.validate().map_err(anyhow::Error::msg)?;
 
-    let runtime = WorkerRuntime::new(args.run_id, args.run_dir, config)?;
-    runtime.run()
+        let runtime = WorkerRuntime::new(args.run_id.clone(), args.run_dir.clone(), config)?;
+        runtime.run()
+    })();
+
+    if let Err(error) = &result {
+        let _ = emit_event(&WorkerEvent::Failed {
+            run_id: args.run_id.clone(),
+            message: error.to_string(),
+        });
+    }
+
+    result
 }
 
 struct WorkerArgs {
@@ -140,9 +272,11 @@ impl WorkerRuntime {
 
     fn run(self) -> Result<()> {
         let started_at_ms = now_ms();
-        let mut engine = open_engine(self.config.engine, &self.data_dir, self.config.durability)?;
-        engine.prepare_dataset(&self.config)?;
-        let warnings = engine.warnings().to_vec();
+        let mut setup_engine = open_engine(self.config.engine, &self.data_dir, self.config.durability)?;
+        setup_engine.prepare_dataset(&self.config)?;
+        setup_engine.flush()?;
+        let mut warnings = setup_engine.warnings().to_vec();
+        drop(setup_engine);
 
         emit_event(&WorkerEvent::Ready {
             run_id: self.run_id.clone(),
@@ -151,21 +285,21 @@ impl WorkerRuntime {
             warnings: warnings.clone(),
         })?;
 
-        let engine = Arc::new(Mutex::new(engine));
-        let control =
-            RuntimeControl::new(self.config.load.concurrency, self.config.load.mix.clone());
+        let control = RuntimeControl::new(self.config.clone());
         let next_id = Arc::new(AtomicU64::new(self.config.scenario.initial_rows + 1));
         let accumulator = Arc::new(Mutex::new(SampleAccumulator::default()));
         let aggregate = Arc::new(Mutex::new(RunAggregate::default()));
+        let errors = RuntimeErrors::default();
 
-        let _control_reader = spawn_control_reader(control.clone());
-        let scheduler = spawn_scheduler(control.clone(), self.config.clone());
+        let _control_reader = spawn_control_reader(self.run_id.clone(), control.clone());
+        let scheduler = spawn_scheduler(self.run_id.clone(), control.clone(), self.config.clone());
         let workers = spawn_workers(
-            engine.clone(),
+            self.data_dir.clone(),
             self.config.clone(),
             control.clone(),
             next_id.clone(),
             accumulator.clone(),
+            errors.clone(),
         );
         let sampler = spawn_sampler(
             self.run_id.clone(),
@@ -189,24 +323,40 @@ impl WorkerRuntime {
         }
         sampler.join().expect("sampler thread panicked")?;
 
-        engine.lock().expect("engine lock poisoned").flush()?;
+        let mut flush_engine =
+            open_engine(self.config.engine, &self.data_dir, self.config.durability)?;
+        flush_engine.flush()?;
 
         let aggregate = aggregate.lock().expect("aggregate lock poisoned").clone();
         let ended_at_ms = now_ms();
+        let error_count = errors.count();
+        let error_messages = errors.messages();
+        if error_count > 0 {
+            warnings.push(format!(
+                "{error_count} operation or worker errors were recorded during the run."
+            ));
+        }
+
+        let status = if error_count > 0 {
+            RunStatus::Failed
+        } else if control.manual_stop_requested() {
+            RunStatus::Interrupted
+        } else {
+            RunStatus::Completed
+        };
+
         let summary = RunSummary {
             run_id: self.run_id.clone(),
             engine: self.config.engine,
             config: self.config.clone(),
+            final_config: control.effective_config(),
             started_at_ms,
             ended_at_ms,
-            status: RunStatus::Completed,
+            status,
             warnings,
-            artifact_paths: ArtifactPaths {
-                config_path: self.run_dir.join("config.json").display().to_string(),
-                metrics_path: self.run_dir.join("metrics.jsonl").display().to_string(),
-                summary_path: self.run_dir.join("summary.json").display().to_string(),
-                data_dir: self.data_dir.display().to_string(),
-            },
+            error_messages,
+            control_events: control.control_events(),
+            artifact_paths: artifact_paths(&self.run_dir, &self.data_dir),
             avg_writes_per_sec: aggregate.avg_writes_per_sec(),
             avg_reads_per_sec: aggregate.avg_reads_per_sec(),
             peak_rss_bytes: aggregate.peak_rss_bytes(),
@@ -217,7 +367,7 @@ impl WorkerRuntime {
     }
 }
 
-fn spawn_control_reader(control: RuntimeControl) -> thread::JoinHandle<()> {
+fn spawn_control_reader(run_id: String, control: RuntimeControl) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let stdin = std::io::stdin();
         let reader = BufReader::new(stdin.lock());
@@ -230,12 +380,17 @@ fn spawn_control_reader(control: RuntimeControl) -> thread::JoinHandle<()> {
             }
             match serde_json::from_str::<ControlMessage>(&line) {
                 Ok(message) => {
-                    let _ = control.apply(message);
+                    apply_control_message(&run_id, &control, message, ControlSource::Interactive)
                 }
                 Err(_) => {
                     for message in Deserializer::from_str(&line).into_iter::<ControlMessage>() {
                         if let Ok(message) = message {
-                            let _ = control.apply(message);
+                            apply_control_message(
+                                &run_id,
+                                &control,
+                                message,
+                                ControlSource::Interactive,
+                            );
                         }
                     }
                 }
@@ -247,7 +402,11 @@ fn spawn_control_reader(control: RuntimeControl) -> thread::JoinHandle<()> {
     })
 }
 
-fn spawn_scheduler(control: RuntimeControl, config: BenchmarkConfig) -> thread::JoinHandle<()> {
+fn spawn_scheduler(
+    run_id: String,
+    control: RuntimeControl,
+    config: BenchmarkConfig,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let start = Instant::now();
         let mut phases = config.ramp_schedule.into_iter().peekable();
@@ -258,7 +417,12 @@ fn spawn_scheduler(control: RuntimeControl, config: BenchmarkConfig) -> thread::
                     break;
                 }
                 let phase = phases.next().expect("phase existed");
-                let _ = control.apply(ControlMessage::ApplyPhase { phase });
+                apply_control_message(
+                    &run_id,
+                    &control,
+                    ControlMessage::ApplyPhase { phase },
+                    ControlSource::Schedule,
+                );
             }
             thread::sleep(Duration::from_millis(100));
         }
@@ -266,21 +430,36 @@ fn spawn_scheduler(control: RuntimeControl, config: BenchmarkConfig) -> thread::
 }
 
 fn spawn_workers(
-    engine: Arc<Mutex<Box<dyn EngineAdapter>>>,
+    data_dir: PathBuf,
     config: BenchmarkConfig,
     control: RuntimeControl,
     next_id: Arc<AtomicU64>,
     accumulator: Arc<Mutex<SampleAccumulator>>,
+    errors: RuntimeErrors,
 ) -> Vec<thread::JoinHandle<()>> {
     let max_concurrency = max_runtime_concurrency(&config);
     (0..max_concurrency)
         .map(|index| {
-            let engine = engine.clone();
+            let data_dir = data_dir.clone();
             let config = config.clone();
             let control = control.clone();
             let next_id = next_id.clone();
             let accumulator = accumulator.clone();
-            thread::spawn(move || worker_loop(index, engine, config, control, next_id, accumulator))
+            let errors = errors.clone();
+            thread::spawn(move || {
+                let engine = match open_engine(config.engine, &data_dir, config.durability) {
+                    Ok(engine) => engine,
+                    Err(error) => {
+                        errors.record(format!(
+                            "worker {index} failed to open {} engine: {error}",
+                            config.engine.as_str()
+                        ));
+                        control.stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                };
+                worker_loop(index, engine, config, control, next_id, accumulator, errors);
+            })
         })
         .collect()
 }
@@ -297,11 +476,12 @@ fn max_runtime_concurrency(config: &BenchmarkConfig) -> usize {
 
 fn worker_loop(
     index: usize,
-    engine: Arc<Mutex<Box<dyn EngineAdapter>>>,
+    mut engine: Box<dyn EngineAdapter>,
     config: BenchmarkConfig,
     control: RuntimeControl,
     next_id: Arc<AtomicU64>,
     accumulator: Arc<Mutex<SampleAccumulator>>,
+    errors: RuntimeErrors,
 ) {
     let mut rng = rand::rng();
     while !control.stop.load(Ordering::Relaxed) {
@@ -312,7 +492,7 @@ fn worker_loop(
             continue;
         }
 
-        let mix = control.mix.lock().expect("mix lock poisoned").clone();
+        let mix = control.current_mix();
         for _ in 0..config.load.batch_size {
             if control.stop.load(Ordering::Relaxed)
                 || control.paused.load(Ordering::Relaxed)
@@ -329,10 +509,7 @@ fn worker_loop(
             };
 
             let start = Instant::now();
-            let result = {
-                let mut engine = engine.lock().expect("engine lock poisoned");
-                execute_operation(engine.as_mut(), &config, op, candidate_id)
-            };
+            let result = execute_operation_with_retry(engine.as_mut(), &config, op, candidate_id);
             let elapsed = start.elapsed().as_micros() as u64;
 
             let mut stats = accumulator.lock().expect("accumulator lock poisoned");
@@ -347,7 +524,10 @@ fn worker_loop(
                         logical_write_bytes,
                     );
                 }
-                Err(_) => stats.record_error(),
+                Err(error) => {
+                    stats.record_error();
+                    errors.record(format!("worker {index} {op:?} failed: {error}"));
+                }
             }
         }
     }
@@ -362,27 +542,37 @@ fn spawn_sampler(
     aggregate: Arc<Mutex<RunAggregate>>,
 ) -> thread::JoinHandle<Result<()>> {
     thread::spawn(move || {
-        let interval = Duration::from_millis(config.load.sample_interval_ms);
+        let target_interval = Duration::from_millis(config.load.sample_interval_ms);
         let mut previous_io = current_io_counters().0;
+        let mut last_sample_at = Instant::now();
 
         loop {
-            thread::sleep(interval);
+            let elapsed = wait_for_sample_tick(last_sample_at, target_interval, &control);
             let snapshot = accumulator
                 .lock()
                 .expect("accumulator lock poisoned")
                 .snapshot_and_reset();
+            let should_emit = !control.stop.load(Ordering::Relaxed)
+                || snapshot.reads > 0
+                || snapshot.writes > 0
+                || snapshot.errors > 0;
+            if !should_emit {
+                break;
+            }
 
+            let sample_interval = elapsed.max(Duration::from_millis(1));
             let (current_io, io_precision) = current_io_counters();
             let (disk_read_bytes_per_sec, disk_write_bytes_per_sec) =
-                io_per_second(previous_io, current_io, interval, &snapshot);
+                io_per_second(previous_io, current_io, sample_interval, &snapshot);
             previous_io = current_io;
 
             let sample = MetricSample {
                 timestamp_ms: now_ms(),
+                sample_duration_ms: sample_interval.as_millis() as u64,
                 run_id: run_id.clone(),
                 engine: config.engine,
-                writes_per_sec: snapshot.writes as f64 / interval.as_secs_f64(),
-                reads_per_sec: snapshot.reads as f64 / interval.as_secs_f64(),
+                writes_per_sec: snapshot.writes as f64 / sample_interval.as_secs_f64(),
+                reads_per_sec: snapshot.reads as f64 / sample_interval.as_secs_f64(),
                 p50_latency_ms: snapshot.p50_latency_ms,
                 p95_latency_ms: snapshot.p95_latency_ms,
                 rss_bytes: current_rss_bytes(),
@@ -401,10 +591,69 @@ fn spawn_sampler(
             if control.stop.load(Ordering::Relaxed) {
                 break;
             }
+            last_sample_at = Instant::now();
         }
 
         Ok(())
     })
+}
+
+fn execute_operation_with_retry(
+    adapter: &mut dyn EngineAdapter,
+    config: &BenchmarkConfig,
+    op: OperationKind,
+    next_id: u64,
+) -> Result<usize> {
+    let start = Instant::now();
+    loop {
+        match execute_operation(adapter, config, op, next_id) {
+            Ok(rows) => return Ok(rows),
+            Err(error)
+                if is_lock_error(&error)
+                    && start.elapsed() < Duration::from_millis(LOCK_RETRY_TIMEOUT_MS) =>
+            {
+                thread::sleep(Duration::from_millis(LOCK_RETRY_SLEEP_MS));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_lock_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("locked") || message.contains("busy")
+}
+
+fn apply_control_message(
+    run_id: &str,
+    control: &RuntimeControl,
+    message: ControlMessage,
+    source: ControlSource,
+) {
+    if let Ok(Some((event, effective_config))) = control.apply(message, source) {
+        let _ = emit_event(&WorkerEvent::ControlApplied {
+            run_id: run_id.to_string(),
+            event,
+            effective_config,
+        });
+    }
+}
+
+fn wait_for_sample_tick(
+    last_sample_at: Instant,
+    target_interval: Duration,
+    control: &RuntimeControl,
+) -> Duration {
+    loop {
+        let elapsed = last_sample_at.elapsed();
+        if elapsed >= target_interval || control.stop.load(Ordering::Relaxed) {
+            return elapsed;
+        }
+        let sleep_for = target_interval
+            .saturating_sub(elapsed)
+            .min(Duration::from_millis(20));
+        thread::sleep(sleep_for);
+    }
 }
 
 fn io_per_second(
@@ -423,6 +672,16 @@ fn io_per_second(
             snapshot.logical_read_bytes as f64 / interval.as_secs_f64(),
             snapshot.logical_write_bytes as f64 / interval.as_secs_f64(),
         )
+    }
+}
+
+fn artifact_paths(run_dir: &Path, data_dir: &Path) -> ArtifactPaths {
+    ArtifactPaths {
+        config_path: run_dir.join("config.json").display().to_string(),
+        metrics_path: run_dir.join("metrics.jsonl").display().to_string(),
+        summary_path: run_dir.join("summary.json").display().to_string(),
+        control_events_path: run_dir.join("control-events.jsonl").display().to_string(),
+        data_dir: data_dir.display().to_string(),
     }
 }
 
@@ -471,14 +730,18 @@ mod tests {
 
     #[test]
     fn runtime_control_updates_mix() -> Result<()> {
-        let control = RuntimeControl::new(2, OperationMix::default());
-        control.apply(ControlMessage::UpdateMix {
-            point_reads: 25,
-            range_scans: 25,
-            inserts: 25,
-            updates: 25,
-        })?;
-        assert_eq!(control.mix.lock().expect("mix").point_reads, 25);
+        let control = RuntimeControl::new(config());
+        control.apply(
+            ControlMessage::UpdateMix {
+                point_reads: 25,
+                range_scans: 25,
+                inserts: 25,
+                updates: 25,
+            },
+            ControlSource::Interactive,
+        )?;
+        assert_eq!(control.current_mix().point_reads, 25);
+        assert_eq!(control.control_events().len(), 1);
         Ok(())
     }
 

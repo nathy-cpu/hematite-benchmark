@@ -64,6 +64,7 @@ fn worker_process_streams_samples_and_finishes_with_live_updates() {
                 writeln!(stdin, "{message}").expect("write control");
                 stdin.flush().expect("flush control");
             }
+            WorkerEvent::ControlApplied { .. } => {}
             WorkerEvent::Sample { .. } => saw_sample = true,
             WorkerEvent::Finished { .. } => {
                 saw_finished = true;

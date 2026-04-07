@@ -16,12 +16,28 @@ pub struct ArtifactPaths {
     pub config_path: String,
     pub metrics_path: String,
     pub summary_path: String,
+    pub control_events_path: String,
     pub data_dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlSource {
+    Interactive,
+    Schedule,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppliedControlEvent {
+    pub timestamp_ms: u64,
+    pub source: ControlSource,
+    pub control: ControlMessage,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetricSample {
     pub timestamp_ms: u64,
+    pub sample_duration_ms: u64,
     pub run_id: String,
     pub engine: EngineKind,
     pub writes_per_sec: f64,
@@ -41,10 +57,13 @@ pub struct RunSummary {
     pub run_id: String,
     pub engine: EngineKind,
     pub config: BenchmarkConfig,
+    pub final_config: BenchmarkConfig,
     pub started_at_ms: u64,
     pub ended_at_ms: u64,
     pub status: RunStatus,
     pub warnings: Vec<String>,
+    pub error_messages: Vec<String>,
+    pub control_events: Vec<AppliedControlEvent>,
     pub artifact_paths: ArtifactPaths,
     pub avg_writes_per_sec: f64,
     pub avg_reads_per_sec: f64,
@@ -72,7 +91,10 @@ pub struct RunDetail {
     pub run_id: String,
     pub status: RunStatus,
     pub config: BenchmarkConfig,
+    pub effective_config: BenchmarkConfig,
     pub warnings: Vec<String>,
+    pub error_messages: Vec<String>,
+    pub control_events: Vec<AppliedControlEvent>,
     pub samples: Vec<MetricSample>,
     #[serde(default)]
     pub summary: Option<RunSummary>,
@@ -107,6 +129,11 @@ pub enum WorkerEvent {
         pid: u32,
         warnings: Vec<String>,
     },
+    ControlApplied {
+        run_id: String,
+        event: AppliedControlEvent,
+        effective_config: BenchmarkConfig,
+    },
     Sample {
         sample: MetricSample,
     },
@@ -128,6 +155,7 @@ mod tests {
     fn metric_sample_round_trip() {
         let sample = MetricSample {
             timestamp_ms: 1,
+            sample_duration_ms: 1_000,
             run_id: "run-1".to_string(),
             engine: EngineKind::Sqlite,
             writes_per_sec: 12.5,
@@ -175,15 +203,19 @@ mod tests {
         let summary = RunSummary {
             run_id: "run".to_string(),
             engine: EngineKind::Hematite,
-            config,
+            config: config.clone(),
+            final_config: config,
             started_at_ms: 1,
             ended_at_ms: 2,
             status: RunStatus::Completed,
             warnings: vec![],
+            error_messages: vec![],
+            control_events: vec![],
             artifact_paths: ArtifactPaths {
                 config_path: "config".to_string(),
                 metrics_path: "metrics".to_string(),
                 summary_path: "summary".to_string(),
+                control_events_path: "controls".to_string(),
                 data_dir: "data".to_string(),
             },
             avg_writes_per_sec: 1.0,

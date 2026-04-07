@@ -8,6 +8,6 @@ pub use config::{
     OperationMix, RampPhase, ScenarioConfig,
 };
 pub use message::{
-    ArtifactPaths, ControlMessage, MetricSample, RunDetail, RunListItem, RunStatus, RunSummary,
-    WorkerEvent,
+    AppliedControlEvent, ArtifactPaths, ControlMessage, ControlSource, MetricSample, RunDetail,
+    RunListItem, RunStatus, RunSummary, WorkerEvent,
 };

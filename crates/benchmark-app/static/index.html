@@ -166,6 +166,7 @@
                 </div>
               </div>
               <div id="setup-summary" class="summary-list"></div>
+              <div id="setup-validation" class="warning-list"></div>
 
               <div class="panel inset-panel">
                 <div class="section-head compact">
@@ -220,8 +221,12 @@
                   <span>Concurrency</span>
                   <input id="live-concurrency" type="range" min="1" max="32" value="4" />
                 </label>
-                <div class="inline-metric">Current value: <strong id="live-concurrency-value">4</strong></div>
+                <label>
+                  <span>Exact concurrency</span>
+                  <input id="live-concurrency-input" type="number" min="1" value="4" />
+                </label>
               </div>
+              <div class="inline-metric">Current value: <strong id="live-concurrency-value">4</strong></div>
               <div class="mix-grid">
                 <label><span>Point reads %</span><input id="live-point" type="number" min="0" max="100" value="50" /></label>
                 <label><span>Range scans %</span><input id="live-range" type="number" min="0" max="100" value="10" /></label>
@@ -241,13 +246,24 @@
                 <h2>Reads / Writes Per Second</h2>
                 <p class="hint">Axes show elapsed time and throughput scale. Stats include current, min, max, average, and median.</p>
               </div>
+              <div id="dashboard-throughput-legend" class="chart-legend"></div>
               <canvas id="dashboard-throughput-chart" width="980" height="320"></canvas>
               <div id="dashboard-throughput-stats" class="series-stats"></div>
             </article>
             <article class="panel chart-panel">
               <div class="chart-head">
+                <h2>Latency</h2>
+                <p class="hint">Track p50 and p95 latency so throughput gains do not hide tail regressions.</p>
+              </div>
+              <div id="dashboard-latency-legend" class="chart-legend"></div>
+              <canvas id="dashboard-latency-chart" width="980" height="300"></canvas>
+              <div id="dashboard-latency-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
                 <h2>Memory Usage</h2>
               </div>
+              <div id="dashboard-memory-legend" class="chart-legend"></div>
               <canvas id="dashboard-memory-chart" width="980" height="300"></canvas>
               <div id="dashboard-memory-stats" class="series-stats"></div>
             </article>
@@ -255,6 +271,7 @@
               <div class="chart-head">
                 <h2>Disk I/O</h2>
               </div>
+              <div id="dashboard-io-legend" class="chart-legend"></div>
               <canvas id="dashboard-io-chart" width="980" height="300"></canvas>
               <div id="dashboard-io-stats" class="series-stats"></div>
             </article>
@@ -262,6 +279,7 @@
               <div class="chart-head">
                 <h2>Disk Space Usage</h2>
               </div>
+              <div id="dashboard-disk-legend" class="chart-legend"></div>
               <canvas id="dashboard-disk-chart" width="980" height="300"></canvas>
               <div id="dashboard-disk-stats" class="series-stats"></div>
             </article>
@@ -297,13 +315,23 @@
               <div class="chart-head">
                 <h2>Reads / Writes Per Second</h2>
               </div>
+              <div id="history-throughput-legend" class="chart-legend"></div>
               <canvas id="history-throughput-chart" width="980" height="320"></canvas>
               <div id="history-throughput-stats" class="series-stats"></div>
             </article>
             <article class="panel chart-panel">
               <div class="chart-head">
+                <h2>Latency</h2>
+              </div>
+              <div id="history-latency-legend" class="chart-legend"></div>
+              <canvas id="history-latency-chart" width="980" height="300"></canvas>
+              <div id="history-latency-stats" class="series-stats"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="chart-head">
                 <h2>Memory Usage</h2>
               </div>
+              <div id="history-memory-legend" class="chart-legend"></div>
               <canvas id="history-memory-chart" width="980" height="300"></canvas>
               <div id="history-memory-stats" class="series-stats"></div>
             </article>
@@ -311,6 +339,7 @@
               <div class="chart-head">
                 <h2>Disk I/O</h2>
               </div>
+              <div id="history-io-legend" class="chart-legend"></div>
               <canvas id="history-io-chart" width="980" height="300"></canvas>
               <div id="history-io-stats" class="series-stats"></div>
             </article>
@@ -318,6 +347,7 @@
               <div class="chart-head">
                 <h2>Disk Space Usage</h2>
               </div>
+              <div id="history-disk-legend" class="chart-legend"></div>
               <canvas id="history-disk-chart" width="980" height="300"></canvas>
               <div id="history-disk-stats" class="series-stats"></div>
             </article>

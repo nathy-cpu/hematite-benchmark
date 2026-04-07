@@ -5,6 +5,7 @@ use hematite::query::JournalMode;
 use rand::Rng;
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct BenchRow {
@@ -198,6 +199,7 @@ fn apply_sqlite_durability(
         DurabilityPreset::Balanced => ("WAL", "NORMAL"),
         DurabilityPreset::Fast => ("MEMORY", "OFF"),
     };
+    conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", journal_mode)?;
     conn.pragma_update(None, "synchronous", synchronous)?;
     Ok(None)

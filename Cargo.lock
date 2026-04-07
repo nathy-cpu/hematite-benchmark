@@ -355,8 +355,6 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "hematite-db"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4896653957a1024fcb7855a2a7833d0b1d5b4ea9d99239eb787d5a1596cdd098"
 
 [[package]]
 name = "http"

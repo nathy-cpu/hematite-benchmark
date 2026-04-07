@@ -73,9 +73,9 @@ pub struct SampleSnapshot {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RunAggregate {
-    sample_count: usize,
-    total_writes_per_sec: f64,
-    total_reads_per_sec: f64,
+    total_sample_duration_ms: u64,
+    weighted_writes: f64,
+    weighted_reads: f64,
     peak_rss_bytes: u64,
     peak_disk_usage_bytes: u64,
     io_precision: IoPrecision,
@@ -83,9 +83,10 @@ pub struct RunAggregate {
 
 impl RunAggregate {
     pub fn update(&mut self, sample: &MetricSample) {
-        self.sample_count += 1;
-        self.total_writes_per_sec += sample.writes_per_sec;
-        self.total_reads_per_sec += sample.reads_per_sec;
+        let duration_secs = sample.sample_duration_ms as f64 / 1_000.0;
+        self.total_sample_duration_ms += sample.sample_duration_ms;
+        self.weighted_writes += sample.writes_per_sec * duration_secs;
+        self.weighted_reads += sample.reads_per_sec * duration_secs;
         self.peak_rss_bytes = self.peak_rss_bytes.max(sample.rss_bytes);
         self.peak_disk_usage_bytes = self.peak_disk_usage_bytes.max(sample.disk_usage_bytes);
         if sample.io_precision == IoPrecision::Approximate {
@@ -94,18 +95,18 @@ impl RunAggregate {
     }
 
     pub fn avg_writes_per_sec(&self) -> f64 {
-        if self.sample_count == 0 {
+        if self.total_sample_duration_ms == 0 {
             0.0
         } else {
-            self.total_writes_per_sec / self.sample_count as f64
+            self.weighted_writes / (self.total_sample_duration_ms as f64 / 1_000.0)
         }
     }
 
     pub fn avg_reads_per_sec(&self) -> f64 {
-        if self.sample_count == 0 {
+        if self.total_sample_duration_ms == 0 {
             0.0
         } else {
-            self.total_reads_per_sec / self.sample_count as f64
+            self.weighted_reads / (self.total_sample_duration_ms as f64 / 1_000.0)
         }
     }
 

@@ -6,8 +6,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use benchmark_core::{
-    BenchmarkConfig, ControlMessage, MetricSample, RunDetail, RunListItem, RunStatus, RunSummary,
-    WorkerEvent,
+    AppliedControlEvent, ArtifactPaths, BenchmarkConfig, ControlMessage, MetricSample, RunAggregate,
+    RunDetail, RunListItem, RunStatus, RunSummary, WorkerEvent,
 };
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
@@ -36,10 +36,13 @@ struct AppState {
 struct StoredRun {
     run_id: String,
     config: BenchmarkConfig,
+    effective_config: BenchmarkConfig,
     status: RunStatus,
     started_at_ms: u64,
     ended_at_ms: Option<u64>,
     warnings: Vec<String>,
+    error_messages: Vec<String>,
+    control_events: Vec<AppliedControlEvent>,
     latest_sample: Option<MetricSample>,
     summary: Option<RunSummary>,
     run_dir: PathBuf,
@@ -133,7 +136,10 @@ async fn get_run(
         run_id: run.run_id.clone(),
         status: run.status.clone(),
         config: run.config.clone(),
+        effective_config: run.effective_config.clone(),
         warnings: run.warnings.clone(),
+        error_messages: run.error_messages.clone(),
+        control_events: run.control_events.clone(),
         samples,
         summary: run.summary.clone(),
     }))
@@ -149,22 +155,14 @@ async fn start_run(
     let run_dir = state.runs_dir.join(&run_id);
     let config_path = run_dir.join("config.json");
     let metrics_path = run_dir.join("metrics.jsonl");
+    let control_events_path = run_dir.join("control-events.jsonl");
     fs::create_dir_all(run_dir.join("data")).await?;
     fs::write(&config_path, serde_json::to_vec_pretty(&config)?).await?;
     fs::write(&metrics_path, &[]).await?;
+    fs::write(&control_events_path, &[]).await?;
 
     let started_at_ms = now_ms();
     let (tx, _) = broadcast::channel(200);
-    let child = spawn_worker_process(&run_id, &run_dir, &config_path).await?;
-    let active = register_worker(
-        state.clone(),
-        run_id.clone(),
-        run_dir.clone(),
-        child,
-        tx.clone(),
-    )
-    .await?;
-
     {
         let mut runs = state.runs.write().await;
         runs.insert(
@@ -172,16 +170,49 @@ async fn start_run(
             StoredRun {
                 run_id: run_id.clone(),
                 config: config.clone(),
+                effective_config: config.clone(),
                 status: RunStatus::Pending,
                 started_at_ms,
                 ended_at_ms: None,
                 warnings: Vec::new(),
+                error_messages: Vec::new(),
+                control_events: Vec::new(),
                 latest_sample: None,
                 summary: None,
                 run_dir: run_dir.clone(),
-                active: Some(active),
+                active: None,
             },
         );
+    }
+
+    let child = match spawn_worker_process(&run_id, &run_dir, &config_path).await {
+        Ok(child) => child,
+        Err(error) => {
+            state.runs.write().await.remove(&run_id);
+            return Err(error);
+        }
+    };
+    let active = match register_worker(
+        state.clone(),
+        run_id.clone(),
+        run_dir.clone(),
+        child,
+        tx.clone(),
+    )
+    .await
+    {
+        Ok(active) => active,
+        Err(error) => {
+            state.runs.write().await.remove(&run_id);
+            return Err(error);
+        }
+    };
+
+    {
+        let mut runs = state.runs.write().await;
+        if let Some(run) = runs.get_mut(&run_id) {
+            run.active = Some(active);
+        }
     }
 
     Ok(Json(RunListItem {
@@ -258,6 +289,7 @@ async fn register_worker(
     let stdin = child.stdin.take().context("worker stdin missing")?;
     let stdin = Arc::new(Mutex::new(stdin));
     let metrics_path = run_dir.join("metrics.jsonl");
+    let control_events_path = run_dir.join("control-events.jsonl");
     let summary_path = run_dir.join("summary.json");
 
     let stdout_state = state.clone();
@@ -276,6 +308,18 @@ async fn register_worker(
                 return;
             }
         };
+        let control_events_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&control_events_path)
+            .await;
+        let mut control_events_file = match control_events_file {
+            Ok(file) => file,
+            Err(error) => {
+                error!(?error, "failed to open control events file");
+                return;
+            }
+        };
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             match serde_json::from_str::<WorkerEvent>(&line) {
@@ -285,6 +329,7 @@ async fn register_worker(
                         &stdout_run_id,
                         &summary_path,
                         &mut file,
+                        &mut control_events_file,
                         event.clone(),
                     )
                     .await
@@ -316,16 +361,25 @@ async fn register_worker(
     tokio::spawn(async move {
         match child.wait().await {
             Ok(status) if !status.success() => {
-                let mut runs = wait_state.runs.write().await;
-                if let Some(run) = runs.get_mut(&wait_run_id)
-                    && matches!(run.status, RunStatus::Pending | RunStatus::Running)
+                if let Err(error) = finalize_failed_run(
+                    &wait_state,
+                    &wait_run_id,
+                    format!("worker exited with status {status}"),
+                )
+                .await
                 {
-                    run.status = RunStatus::Failed;
-                    run.active = None;
+                    error!(?error, "failed to finalize failed run");
                 }
             }
             Ok(_) => {}
-            Err(error) => error!(?error, "failed to wait for worker"),
+            Err(error) => {
+                error!(?error, "failed to wait for worker");
+                if let Err(finalize_error) =
+                    finalize_failed_run(&wait_state, &wait_run_id, error.to_string()).await
+                {
+                    error!(?finalize_error, "failed to persist wait error");
+                }
+            }
         }
     });
 
@@ -337,6 +391,7 @@ async fn handle_worker_event(
     run_id: &str,
     summary_path: &FsPath,
     metrics_file: &mut tokio::fs::File,
+    control_events_file: &mut tokio::fs::File,
     event: WorkerEvent,
 ) -> Result<()> {
     match event {
@@ -345,6 +400,20 @@ async fn handle_worker_event(
             if let Some(run) = runs.get_mut(run_id) {
                 run.status = RunStatus::Running;
                 run.warnings = warnings;
+            }
+        }
+        WorkerEvent::ControlApplied {
+            event,
+            effective_config,
+            ..
+        } => {
+            control_events_file
+                .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
+                .await?;
+            let mut runs = state.runs.write().await;
+            if let Some(run) = runs.get_mut(run_id) {
+                run.control_events.push(event);
+                run.effective_config = effective_config;
             }
         }
         WorkerEvent::Sample { sample } => {
@@ -364,17 +433,16 @@ async fn handle_worker_event(
                 run.ended_at_ms = Some(summary.ended_at_ms);
                 run.status = summary.status.clone();
                 run.warnings = summary.warnings.clone();
+                run.error_messages = summary.error_messages.clone();
+                run.control_events = summary.control_events.clone();
+                run.effective_config = summary.final_config.clone();
                 run.summary = Some(summary);
                 run.active = None;
             }
         }
         WorkerEvent::Failed { message, .. } => {
             warn!("worker failed: {message}");
-            let mut runs = state.runs.write().await;
-            if let Some(run) = runs.get_mut(run_id) {
-                run.status = RunStatus::Failed;
-                run.active = None;
-            }
+            finalize_failed_run(state, run_id, message).await?;
         }
     }
     Ok(())
@@ -444,6 +512,8 @@ async fn load_existing_runs(runs_dir: &FsPath) -> Result<HashMap<String, StoredR
             continue;
         }
         let config: BenchmarkConfig = serde_json::from_slice(&fs::read(&config_path).await?)?;
+        let control_events =
+            load_control_events(&run_dir.join("control-events.jsonl")).await.unwrap_or_default();
         let summary_path = run_dir.join("summary.json");
         let summary = if summary_path.exists() {
             Some(serde_json::from_slice::<RunSummary>(
@@ -466,16 +536,27 @@ async fn load_existing_runs(runs_dir: &FsPath) -> Result<HashMap<String, StoredR
             .as_ref()
             .map(|summary| summary.warnings.clone())
             .unwrap_or_default();
+        let error_messages = summary
+            .as_ref()
+            .map(|summary| summary.error_messages.clone())
+            .unwrap_or_default();
+        let effective_config = summary
+            .as_ref()
+            .map(|summary| summary.final_config.clone())
+            .unwrap_or_else(|| apply_control_events(&config, &control_events));
 
         runs.insert(
             run_id.clone(),
             StoredRun {
                 run_id,
                 config,
+                effective_config,
                 status,
                 started_at_ms,
                 ended_at_ms,
                 warnings,
+                error_messages,
+                control_events,
                 latest_sample,
                 summary,
                 run_dir,
@@ -508,6 +589,137 @@ async fn latest_sample(path: &FsPath) -> Result<Option<MetricSample>> {
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
     Ok(samples.last().cloned())
+}
+
+async fn load_control_events(path: &FsPath) -> Result<Vec<AppliedControlEvent>, ApiError> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = fs::read(path).await?;
+    let mut events = Vec::new();
+    for line in String::from_utf8_lossy(&bytes).lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(event) = serde_json::from_str::<AppliedControlEvent>(line) {
+            events.push(event);
+        }
+    }
+    Ok(events)
+}
+
+fn apply_control_events(
+    initial_config: &BenchmarkConfig,
+    events: &[AppliedControlEvent],
+) -> BenchmarkConfig {
+    let mut config = initial_config.clone();
+    for event in events {
+        match &event.control {
+            ControlMessage::UpdateConcurrency { concurrency } => {
+                config.load.concurrency = *concurrency;
+            }
+            ControlMessage::UpdateMix {
+                point_reads,
+                range_scans,
+                inserts,
+                updates,
+            } => {
+                config.load.mix = benchmark_core::OperationMix {
+                    point_reads: *point_reads,
+                    range_scans: *range_scans,
+                    inserts: *inserts,
+                    updates: *updates,
+                };
+            }
+            ControlMessage::ApplyPhase { phase } => config.apply_phase(phase),
+            ControlMessage::Pause | ControlMessage::Resume | ControlMessage::Stop => {}
+        }
+    }
+    config
+}
+
+fn summarize_samples(samples: &[MetricSample]) -> RunAggregate {
+    let mut aggregate = RunAggregate::default();
+    for sample in samples {
+        aggregate.update(sample);
+    }
+    aggregate
+}
+
+fn artifact_paths(run_dir: &FsPath) -> ArtifactPaths {
+    ArtifactPaths {
+        config_path: run_dir.join("config.json").display().to_string(),
+        metrics_path: run_dir.join("metrics.jsonl").display().to_string(),
+        summary_path: run_dir.join("summary.json").display().to_string(),
+        control_events_path: run_dir.join("control-events.jsonl").display().to_string(),
+        data_dir: run_dir.join("data").display().to_string(),
+    }
+}
+
+async fn finalize_failed_run(state: &AppState, run_id: &str, message: String) -> Result<()> {
+    let (run_dir, config, effective_config, started_at_ms, ended_at_ms, warnings, error_messages, control_events, has_summary) =
+        {
+            let mut runs = state.runs.write().await;
+            let Some(run) = runs.get_mut(run_id) else {
+                return Ok(());
+            };
+            if !run.error_messages.iter().any(|existing| existing == &message)
+                && run.error_messages.len() < 8
+            {
+                run.error_messages.push(message.clone());
+            }
+            run.status = RunStatus::Failed;
+            run.active = None;
+            let ended_at_ms = *run.ended_at_ms.get_or_insert_with(now_ms);
+            (
+                run.run_dir.clone(),
+                run.config.clone(),
+                run.effective_config.clone(),
+                run.started_at_ms,
+                ended_at_ms,
+                run.warnings.clone(),
+                run.error_messages.clone(),
+                run.control_events.clone(),
+                run.summary.is_some(),
+            )
+        };
+
+    if has_summary {
+        return Ok(());
+    }
+
+    let samples = load_samples(&run_dir.join("metrics.jsonl"))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let aggregate = summarize_samples(&samples);
+    let summary = RunSummary {
+        run_id: run_id.to_string(),
+        engine: config.engine,
+        config,
+        final_config: effective_config,
+        started_at_ms,
+        ended_at_ms,
+        status: RunStatus::Failed,
+        warnings,
+        error_messages,
+        control_events,
+        artifact_paths: artifact_paths(&run_dir),
+        avg_writes_per_sec: aggregate.avg_writes_per_sec(),
+        avg_reads_per_sec: aggregate.avg_reads_per_sec(),
+        peak_rss_bytes: aggregate.peak_rss_bytes(),
+        peak_disk_usage_bytes: aggregate.peak_disk_usage_bytes(),
+    };
+    let summary_path = run_dir.join("summary.json");
+    fs::write(&summary_path, serde_json::to_vec_pretty(&summary)?).await?;
+
+    let mut runs = state.runs.write().await;
+    if let Some(run) = runs.get_mut(run_id) {
+        run.summary = Some(summary);
+        run.ended_at_ms = Some(ended_at_ms);
+        run.status = RunStatus::Failed;
+        run.active = None;
+    }
+    Ok(())
 }
 
 fn now_ms() -> u64 {

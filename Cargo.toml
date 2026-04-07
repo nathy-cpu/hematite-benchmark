@@ -14,7 +14,7 @@ axum = { version = "0.8.6", features = ["json", "macros"] }
 benchmark-core = { path = "crates/benchmark-core" }
 bytes = "1.10.1"
 futures = "0.3.31"
-hematite = { package = "hematite-db", version = "0.1.0" }
+hematite = { package = "hematite-db", path = "../hematite" }
 rand = "0.9.2"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
