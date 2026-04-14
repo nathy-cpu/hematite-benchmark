@@ -54,6 +54,85 @@ const routeMap = {
   "/history": "history",
 };
 
+function defaultStorageConfig() {
+  return {
+    sqlite: {
+      journal_mode: "wal",
+      synchronous: "normal",
+    },
+    hematite: {
+      journal_mode: "wal",
+    },
+  };
+}
+
+function storageFromLegacyDurability(durability) {
+  if (durability === "safe") {
+    return {
+      sqlite: {
+        journal_mode: "wal",
+        synchronous: "full",
+      },
+      hematite: {
+        journal_mode: "wal",
+      },
+    };
+  }
+  if (durability === "fast") {
+    return {
+      sqlite: {
+        journal_mode: "memory",
+        synchronous: "off",
+      },
+      hematite: {
+        journal_mode: "rollback",
+      },
+    };
+  }
+  return defaultStorageConfig();
+}
+
+function isDefaultStorageConfig(storage) {
+  return (
+    storage?.sqlite?.journal_mode === "wal" &&
+    storage?.sqlite?.synchronous === "normal" &&
+    storage?.hematite?.journal_mode === "wal"
+  );
+}
+
+function resolveStorageConfig(config = {}) {
+  const defaults = defaultStorageConfig();
+  const storage = {
+    sqlite: {
+      ...defaults.sqlite,
+      ...(config.storage?.sqlite || {}),
+    },
+    hematite: {
+      ...defaults.hematite,
+      ...(config.storage?.hematite || {}),
+    },
+  };
+  if (config.durability && isDefaultStorageConfig(storage)) {
+    return storageFromLegacyDurability(config.durability);
+  }
+  return storage;
+}
+
+function formatSettingValue(value) {
+  return String(value || "").replaceAll("_", " ").toUpperCase();
+}
+
+function formatEngineSettings(config) {
+  if (!config?.engine) {
+    return "n/a";
+  }
+  const storage = resolveStorageConfig(config);
+  if (config.engine === "sqlite") {
+    return `journal_mode=${formatSettingValue(storage.sqlite.journal_mode)}, synchronous=${formatSettingValue(storage.sqlite.synchronous)}`;
+  }
+  return `journal_mode=${formatSettingValue(storage.hematite.journal_mode)}`;
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -183,7 +262,6 @@ function readFormState(form, options = {}) {
     config: {
       run_name: form.run_name.value.trim(),
       engine: form.engine.value,
-      durability: form.durability.value,
       scenario: {
         initial_rows: Number(form.initial_rows.value),
         payload_size_bytes: Number(form.payload_size_bytes.value),
@@ -203,15 +281,31 @@ function readFormState(form, options = {}) {
         },
       },
       ramp_schedule: rampResult.value,
+      storage: {
+        sqlite: {
+          journal_mode: form.sqlite_journal_mode.value,
+          synchronous: form.sqlite_synchronous.value,
+        },
+        hematite: {
+          journal_mode: form.hematite_journal_mode.value,
+        },
+      },
     },
     rampError: rampResult.error,
   };
+}
+
+function syncEngineSettingPanels(engine) {
+  document.querySelectorAll("[data-engine-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.enginePanel !== engine;
+  });
 }
 
 function renderSetupSummary() {
   const form = document.getElementById("run-form");
   const validation = document.getElementById("setup-validation");
   const { config, rampError } = readFormState(form);
+  syncEngineSettingPanels(config.engine);
   const durationText = humanizeDuration(config.load.duration_secs);
   document.getElementById("duration-preview").textContent = durationText;
 
@@ -241,6 +335,10 @@ function renderSetupSummary() {
     <div class="summary-item">
       <span class="label">Payload</span>
       <strong>${formatBytes(config.scenario.payload_size_bytes)}</strong>
+    </div>
+    <div class="summary-item">
+      <span class="label">Settings</span>
+      <strong>${formatEngineSettings(config)}</strong>
     </div>
     <div class="summary-item">
       <span class="label">Mix total</span>
@@ -397,8 +495,10 @@ async function refreshRuns() {
 
   renderDashboardSummary();
   renderDashboardCharts();
+  renderDashboardLogs();
   renderHistorySummary();
   renderHistoryCharts();
+  renderHistoryLogs();
 }
 
 async function ensureRunDetail(runId) {
@@ -416,6 +516,7 @@ function attachStream(runId) {
     const payload = JSON.parse(event.data);
     const detail = state.runDetails.get(runId) || {
       samples: [],
+      logs: [],
       warnings: [],
       error_messages: [],
       control_events: [],
@@ -425,6 +526,9 @@ function attachStream(runId) {
     };
     if (payload.kind === "sample") {
       detail.samples.push(payload.sample);
+    }
+    if (payload.kind === "log") {
+      detail.logs = [...(detail.logs || []), payload.entry];
     }
     if (payload.kind === "control_applied") {
       detail.control_events = [...(detail.control_events || []), payload.event];
@@ -455,10 +559,12 @@ function attachStream(runId) {
     if (runId === state.activeRunId) {
       renderDashboardSummary();
       renderDashboardCharts();
+      renderDashboardLogs();
     }
     if (state.historySelection.has(runId)) {
       renderHistorySummary();
       renderHistoryCharts();
+      renderHistoryLogs();
     }
   };
   source.onerror = () => {
@@ -497,10 +603,14 @@ function renderDashboardSummary() {
     run.summary?.final_config?.load?.duration_secs ||
     run.summary?.config?.load?.duration_secs ||
     0;
+  const logs = detail.logs || run.summary?.recent_logs || [];
+  const latestLog = logs.at(-1);
+  const logCount = detail.summary?.log_count || run.summary?.log_count || logs.length;
   summary.innerHTML = `
     <div class="summary-card"><span>Run</span><strong>${run.run_name}</strong></div>
     <div class="summary-card"><span>Status</span><strong>${run.status}</strong></div>
     <div class="summary-card"><span>Elapsed</span><strong>${humanizeDuration(Math.max(1, Math.round(durationSecs || configuredDuration)))}</strong></div>
+    <div class="summary-card"><span>Settings</span><strong>${formatEngineSettings(detail.effective_config || detail.config || run.summary?.final_config || run.summary?.config)}</strong></div>
     <div class="summary-card"><span>Writes/s</span><strong>${formatOpsPerSecond(last?.writes_per_sec || 0)}</strong></div>
     <div class="summary-card"><span>Reads/s</span><strong>${formatOpsPerSecond(last?.reads_per_sec || 0)}</strong></div>
     <div class="summary-card"><span>P95 latency</span><strong>${formatLatencyMs(last?.p95_latency_ms || 0)}</strong></div>
@@ -508,12 +618,22 @@ function renderDashboardSummary() {
     <div class="summary-card"><span>Disk I/O</span><strong>${formatBytesPerSecond((last?.disk_read_bytes_per_sec || 0) + (last?.disk_write_bytes_per_sec || 0))}</strong></div>
     <div class="summary-card"><span>Disk usage</span><strong>${formatBytes(last?.disk_usage_bytes || 0)}</strong></div>
     <div class="summary-card"><span>Total errors</span><strong>${formatInteger(totalSampleErrors(detail.samples || []))}</strong></div>
+    <div class="summary-card"><span>Log events</span><strong>${formatInteger(logCount)}</strong></div>
   `;
 
   warnings.innerHTML = renderMessageItems(
     [...(detail.warnings || run.summary?.warnings || [])],
     [...(detail.error_messages || run.summary?.error_messages || [])],
   );
+  if (latestLog) {
+    warnings.innerHTML += `
+      <div class="warning-item">
+        <strong>Latest event</strong>
+        <div class="run-meta">${formatLogTimestamp(latestLog.timestamp_ms)} • ${latestLog.level} • ${latestLog.source}</div>
+        <div>${escapeHtml(latestLog.message)}</div>
+      </div>
+    `;
+  }
 }
 
 function renderHistorySummary() {
@@ -532,6 +652,9 @@ function renderHistorySummary() {
     const effectiveConfig = summary?.final_config || detail.effective_config || detail.config;
     const avgP95 = computeStats(detail.samples || [], "p95_latency_ms");
     const totalErrors = totalSampleErrors(detail.samples || []);
+    const logs = detail.logs || summary?.recent_logs || [];
+    const latestLog = logs.at(-1);
+    const logCount = summary?.log_count || logs.length;
     return `
       <div class="summary-card">
         <span>${run.run_name} • ${run.engine}</span>
@@ -545,8 +668,11 @@ function renderHistorySummary() {
           <div><span>Peak RSS</span><strong>${summary ? formatBytes(summary.peak_rss_bytes) : "n/a"}</strong></div>
           <div><span>Peak disk</span><strong>${summary ? formatBytes(summary.peak_disk_usage_bytes) : "n/a"}</strong></div>
           <div><span>Final concurrency</span><strong>${formatInteger(effectiveConfig?.load?.concurrency || 0)}</strong></div>
+          <div><span>Log events</span><strong>${formatInteger(logCount)}</strong></div>
         </div>
+        <div class="run-meta">Storage: ${formatEngineSettings(effectiveConfig)}</div>
         <div class="run-meta">Final mix: ${formatMix(effectiveConfig?.load?.mix)}</div>
+        ${latestLog ? `<div class="run-meta">Latest event: ${escapeHtml(latestLog.message)}</div>` : ""}
       </div>
     `;
   }).join("");
@@ -558,11 +684,44 @@ function renderDashboardCharts() {
   renderChartGroup("dashboard", runs);
 }
 
+function renderDashboardLogs() {
+  const container = document.getElementById("dashboard-logs");
+  const detail = state.runDetails.get(state.activeRunId);
+  const logs = detail?.logs || detail?.summary?.recent_logs || [];
+  if (!logs.length) {
+    container.innerHTML = '<div class="empty-state">No run events yet. Start a run to watch lifecycle, sample, and error messages here.</div>';
+    return;
+  }
+  container.innerHTML = renderLogEntries(logs.slice(-60));
+}
+
 function renderHistoryCharts() {
   const runs = [...state.historySelection]
     .map((runId) => state.runDetails.get(runId))
     .filter(Boolean);
   renderChartGroup("history", runs);
+}
+
+function renderHistoryLogs() {
+  const container = document.getElementById("history-logs");
+  const details = [...state.historySelection]
+    .map((runId) => ({ run: getRunById(runId), detail: state.runDetails.get(runId) }))
+    .filter((entry) => entry.run && entry.detail);
+
+  if (!details.length) {
+    container.innerHTML = '<div class="empty-state">Select one or more runs to inspect their recent event logs.</div>';
+    return;
+  }
+
+  container.innerHTML = details.map(({ run, detail }) => {
+    const logs = detail.logs || detail.summary?.recent_logs || [];
+    return `
+      <div class="series-card">
+        <div class="series-label">${run.run_name} • ${run.engine}</div>
+        ${logs.length ? renderLogEntries(logs.slice(-20)) : '<div class="empty-state">No logs saved for this run.</div>'}
+      </div>
+    `;
+  }).join("");
 }
 
 function renderChartGroup(prefix, runs) {
@@ -796,6 +955,10 @@ async function sendControl(runId, payload) {
 
 function setupForm() {
   const form = document.getElementById("run-form");
+  form.engine.addEventListener("change", () => {
+    syncEngineSettingPanels(form.engine.value);
+    renderSetupSummary();
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -935,6 +1098,35 @@ function statusPillClass(status) {
   return `status-pill is-${status || "pending"}`;
 }
 
+function formatLogTimestamp(timestampMs) {
+  if (!timestampMs) {
+    return "time unknown";
+  }
+  return new Date(timestampMs).toLocaleTimeString();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderLogEntries(entries) {
+  return entries.map((entry) => `
+    <div class="log-entry is-${entry.level || "info"}">
+      <div class="log-meta">
+        <span>${formatLogTimestamp(entry.timestamp_ms)}</span>
+        <span>${(entry.level || "info").toUpperCase()}</span>
+        <span>${String(entry.source || "server").replaceAll("_", " ")}</span>
+      </div>
+      <div class="log-message">${escapeHtml(entry.message)}</div>
+    </div>
+  `).join("");
+}
+
 function renderMessageItems(warnings, errors) {
   return [
     ...warnings.map((text) => `<div class="warning-item">${text}</div>`),
@@ -959,6 +1151,7 @@ async function boot() {
   setupControls();
   setupDurationControls();
   syncPageFromLocation();
+  syncEngineSettingPanels(document.getElementById("run-form").engine.value);
   renderSetupSummary();
   await refreshRuns();
   setInterval(refreshRuns, 5000);

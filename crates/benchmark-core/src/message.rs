@@ -18,6 +18,33 @@ pub struct ArtifactPaths {
     pub summary_path: String,
     pub control_events_path: String,
     pub data_dir: String,
+    #[serde(default)]
+    pub logs_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunLogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunLogSource {
+    Server,
+    WorkerEvent,
+    WorkerStderr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunLogEntry {
+    pub timestamp_ms: u64,
+    pub level: RunLogLevel,
+    pub source: RunLogSource,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +96,10 @@ pub struct RunSummary {
     pub avg_reads_per_sec: f64,
     pub peak_rss_bytes: u64,
     pub peak_disk_usage_bytes: u64,
+    #[serde(default)]
+    pub log_count: usize,
+    #[serde(default)]
+    pub recent_logs: Vec<RunLogEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,6 +127,8 @@ pub struct RunDetail {
     pub error_messages: Vec<String>,
     pub control_events: Vec<AppliedControlEvent>,
     pub samples: Vec<MetricSample>,
+    #[serde(default)]
+    pub logs: Vec<RunLogEntry>,
     #[serde(default)]
     pub summary: Option<RunSummary>,
 }
@@ -137,6 +170,10 @@ pub enum WorkerEvent {
     Sample {
         sample: MetricSample,
     },
+    Log {
+        run_id: String,
+        entry: RunLogEntry,
+    },
     Finished {
         summary: RunSummary,
     },
@@ -149,7 +186,7 @@ pub enum WorkerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DurabilityPreset, LoadConfig, ScenarioConfig};
+    use crate::{LoadConfig, ScenarioConfig, StorageConfig};
 
     #[test]
     fn metric_sample_round_trip() {
@@ -198,7 +235,8 @@ mod tests {
             scenario: ScenarioConfig::default(),
             load: LoadConfig::default(),
             ramp_schedule: vec![],
-            durability: DurabilityPreset::Balanced,
+            storage: StorageConfig::default(),
+            durability: None,
         };
         let summary = RunSummary {
             run_id: "run".to_string(),
@@ -217,11 +255,19 @@ mod tests {
                 summary_path: "summary".to_string(),
                 control_events_path: "controls".to_string(),
                 data_dir: "data".to_string(),
+                logs_path: "logs".to_string(),
             },
             avg_writes_per_sec: 1.0,
             avg_reads_per_sec: 2.0,
             peak_rss_bytes: 3,
             peak_disk_usage_bytes: 4,
+            log_count: 1,
+            recent_logs: vec![RunLogEntry {
+                timestamp_ms: 3,
+                level: RunLogLevel::Info,
+                source: RunLogSource::Server,
+                message: "summary ready".to_string(),
+            }],
         };
 
         let json = serde_json::to_string(&summary).unwrap();

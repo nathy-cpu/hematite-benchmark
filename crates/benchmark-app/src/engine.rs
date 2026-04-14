@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
-use benchmark_core::{BenchmarkConfig, DurabilityPreset, EngineKind, OperationKind};
+use benchmark_core::{
+    BenchmarkConfig, EngineKind, HematiteJournalMode, HematiteStorageConfig, OperationKind,
+    SqliteStorageConfig,
+};
 use hematite::Hematite;
 use hematite::query::JournalMode;
 use rand::Rng;
@@ -27,15 +30,12 @@ pub trait EngineAdapter: Send {
     fn flush(&mut self) -> Result<()>;
 }
 
-pub fn open_engine(
-    engine: EngineKind,
-    data_dir: &Path,
-    durability: DurabilityPreset,
-) -> Result<Box<dyn EngineAdapter>> {
+pub fn open_engine(config: &BenchmarkConfig, data_dir: &Path) -> Result<Box<dyn EngineAdapter>> {
     std::fs::create_dir_all(data_dir)?;
-    match engine {
-        EngineKind::Sqlite => Ok(Box::new(SqliteAdapter::open(data_dir, durability)?)),
-        EngineKind::Hematite => Ok(Box::new(HematiteAdapter::open(data_dir, durability)?)),
+    let storage = config.resolved_storage();
+    match config.engine {
+        EngineKind::Sqlite => Ok(Box::new(SqliteAdapter::open(data_dir, storage.sqlite)?)),
+        EngineKind::Hematite => Ok(Box::new(HematiteAdapter::open(data_dir, storage.hematite)?)),
     }
 }
 
@@ -93,12 +93,12 @@ struct SqliteAdapter {
 }
 
 impl SqliteAdapter {
-    fn open(data_dir: &Path, durability: DurabilityPreset) -> Result<Self> {
+    fn open(data_dir: &Path, settings: SqliteStorageConfig) -> Result<Self> {
         let path = data_dir.join("sqlite.db");
         let conn = Connection::open(&path)?;
-        let warnings = apply_sqlite_durability(&conn, durability)
+        let warnings = apply_sqlite_settings(&conn, settings)
             .map(|warning| warning.into_iter().collect())
-            .context("failed to configure sqlite durability")?;
+            .context("failed to configure sqlite settings")?;
         Ok(Self {
             conn,
             path,
@@ -190,18 +190,17 @@ impl EngineAdapter for SqliteAdapter {
     }
 }
 
-fn apply_sqlite_durability(
+fn apply_sqlite_settings(
     conn: &Connection,
-    durability: DurabilityPreset,
+    settings: SqliteStorageConfig,
 ) -> Result<Option<String>> {
-    let (journal_mode, synchronous) = match durability {
-        DurabilityPreset::Safe => ("WAL", "FULL"),
-        DurabilityPreset::Balanced => ("WAL", "NORMAL"),
-        DurabilityPreset::Fast => ("MEMORY", "OFF"),
-    };
     conn.busy_timeout(Duration::from_secs(5))?;
-    conn.pragma_update(None, "journal_mode", journal_mode)?;
-    conn.pragma_update(None, "synchronous", synchronous)?;
+    conn.pragma_update(
+        None,
+        "journal_mode",
+        settings.journal_mode.as_pragma_value(),
+    )?;
+    conn.pragma_update(None, "synchronous", settings.synchronous.as_pragma_value())?;
     Ok(None)
 }
 
@@ -211,11 +210,11 @@ struct HematiteAdapter {
 }
 
 impl HematiteAdapter {
-    fn open(data_dir: &Path, durability: DurabilityPreset) -> Result<Self> {
+    fn open(data_dir: &Path, settings: HematiteStorageConfig) -> Result<Self> {
         let path = data_dir.join("hematite.db");
         let path_string = path.to_string_lossy().to_string();
         let mut db = Hematite::new(&path_string)?;
-        let warnings = apply_hematite_durability(&mut db, durability)?;
+        let warnings = apply_hematite_settings(&mut db, settings)?;
         Ok(Self { db, warnings })
     }
 }
@@ -302,28 +301,16 @@ impl EngineAdapter for HematiteAdapter {
     }
 }
 
-fn apply_hematite_durability(
+fn apply_hematite_settings(
     db: &mut Hematite,
-    durability: DurabilityPreset,
+    settings: HematiteStorageConfig,
 ) -> Result<Vec<String>> {
-    let mut warnings = Vec::new();
-    let mode = match durability {
-        DurabilityPreset::Safe => {
-            warnings.push(
-                "Hematite only exposes WAL vs rollback journal mode, so the safe preset uses WAL without a separate synchronous knob.".to_string(),
-            );
-            JournalMode::Wal
-        }
-        DurabilityPreset::Balanced => JournalMode::Wal,
-        DurabilityPreset::Fast => {
-            warnings.push(
-                "Hematite does not expose SQLite-style synchronous=OFF; the fast preset falls back to rollback journaling.".to_string(),
-            );
-            JournalMode::Rollback
-        }
+    let mode = match settings.journal_mode {
+        HematiteJournalMode::Rollback => JournalMode::Rollback,
+        HematiteJournalMode::Wal => JournalMode::Wal,
     };
     db.set_journal_mode(mode)?;
-    Ok(warnings)
+    Ok(Vec::new())
 }
 
 fn sql_string_literal(value: &str) -> String {
@@ -361,7 +348,9 @@ pub fn execute_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use benchmark_core::{BenchmarkConfig, EngineKind, LoadConfig, OperationMix, ScenarioConfig};
+    use benchmark_core::{
+        BenchmarkConfig, EngineKind, LoadConfig, OperationMix, ScenarioConfig, StorageConfig,
+    };
     use tempfile::tempdir;
 
     fn sqlite_config() -> BenchmarkConfig {
@@ -382,14 +371,15 @@ mod tests {
                 mix: OperationMix::default(),
             },
             ramp_schedule: vec![],
-            durability: DurabilityPreset::Balanced,
+            storage: StorageConfig::default(),
+            durability: None,
         }
     }
 
     #[test]
     fn sqlite_adapter_supports_full_workload() -> Result<()> {
         let dir = tempdir()?;
-        let mut adapter = SqliteAdapter::open(dir.path(), DurabilityPreset::Balanced)?;
+        let mut adapter = SqliteAdapter::open(dir.path(), Default::default())?;
         let config = sqlite_config();
         adapter.prepare_dataset(&config)?;
 
@@ -403,7 +393,7 @@ mod tests {
     #[test]
     fn hematite_adapter_supports_documented_sql_surface() -> Result<()> {
         let dir = tempdir()?;
-        let mut adapter = HematiteAdapter::open(dir.path(), DurabilityPreset::Balanced)?;
+        let mut adapter = HematiteAdapter::open(dir.path(), Default::default())?;
         let config = BenchmarkConfig {
             engine: EngineKind::Hematite,
             ..sqlite_config()

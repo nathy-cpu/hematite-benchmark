@@ -451,6 +451,56 @@ button.danger {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.log-console {
+  display: grid;
+  gap: 8px;
+  max-height: 340px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 14px;
+  background: rgba(3, 8, 10, 0.45);
+  border: 1px solid rgba(147, 173, 183, 0.14);
+}
+
+.log-entry {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(10, 20, 26, 0.88);
+  border: 1px solid rgba(147, 173, 183, 0.08);
+}
+
+.log-entry.is-debug {
+  border-color: rgba(96, 165, 250, 0.22);
+}
+
+.log-entry.is-info {
+  border-color: rgba(52, 211, 153, 0.2);
+}
+
+.log-entry.is-warn {
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.log-entry.is-error {
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.log-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 0.78rem;
+  color: rgba(147, 173, 183, 0.9);
+}
+
+.log-message {
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: rgba(230, 241, 244, 0.96);
+}
+
 @media (max-width: 1200px) {
   .setup-grid,
   .dashboard-grid,

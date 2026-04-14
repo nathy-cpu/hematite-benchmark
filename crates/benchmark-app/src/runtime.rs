@@ -1,6 +1,4 @@
-use crate::engine::{
-    EngineAdapter, execute_operation, logical_bytes_for_operation, open_engine,
-};
+use crate::engine::{EngineAdapter, execute_operation, logical_bytes_for_operation, open_engine};
 use crate::metrics::{IoCounters, current_io_counters, current_rss_bytes, dir_size_bytes};
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
@@ -78,9 +76,11 @@ impl RuntimeControl {
                     .lock()
                     .expect("effective config lock poisoned");
                 effective_config.load.concurrency = *concurrency;
-                Ok(Some(
-                    self.record_control(message, source, effective_config.clone()),
-                ))
+                Ok(Some(self.record_control(
+                    message,
+                    source,
+                    effective_config.clone(),
+                )))
             }
             ControlMessage::UpdateMix {
                 point_reads,
@@ -101,9 +101,11 @@ impl RuntimeControl {
                     .lock()
                     .expect("effective config lock poisoned");
                 effective_config.load.mix = mix;
-                Ok(Some(
-                    self.record_control(message, source, effective_config.clone()),
-                ))
+                Ok(Some(self.record_control(
+                    message,
+                    source,
+                    effective_config.clone(),
+                )))
             }
             ControlMessage::ApplyPhase { phase } => {
                 if let Some(concurrency) = phase.concurrency {
@@ -121,9 +123,11 @@ impl RuntimeControl {
                     .lock()
                     .expect("effective config lock poisoned");
                 effective_config.apply_phase(phase);
-                Ok(Some(
-                    self.record_control(message, source, effective_config.clone()),
-                ))
+                Ok(Some(self.record_control(
+                    message,
+                    source,
+                    effective_config.clone(),
+                )))
             }
         }
     }
@@ -180,7 +184,8 @@ impl RuntimeErrors {
         let message = message.into();
         self.total.fetch_add(1, Ordering::Relaxed);
         let mut messages = self.messages.lock().expect("error messages lock poisoned");
-        if messages.len() >= MAX_ERROR_MESSAGES || messages.iter().any(|existing| existing == &message)
+        if messages.len() >= MAX_ERROR_MESSAGES
+            || messages.iter().any(|existing| existing == &message)
         {
             return;
         }
@@ -272,7 +277,7 @@ impl WorkerRuntime {
 
     fn run(self) -> Result<()> {
         let started_at_ms = now_ms();
-        let mut setup_engine = open_engine(self.config.engine, &self.data_dir, self.config.durability)?;
+        let mut setup_engine = open_engine(&self.config, &self.data_dir)?;
         setup_engine.prepare_dataset(&self.config)?;
         setup_engine.flush()?;
         let mut warnings = setup_engine.warnings().to_vec();
@@ -323,8 +328,7 @@ impl WorkerRuntime {
         }
         sampler.join().expect("sampler thread panicked")?;
 
-        let mut flush_engine =
-            open_engine(self.config.engine, &self.data_dir, self.config.durability)?;
+        let mut flush_engine = open_engine(&self.config, &self.data_dir)?;
         flush_engine.flush()?;
 
         let aggregate = aggregate.lock().expect("aggregate lock poisoned").clone();
@@ -361,6 +365,8 @@ impl WorkerRuntime {
             avg_reads_per_sec: aggregate.avg_reads_per_sec(),
             peak_rss_bytes: aggregate.peak_rss_bytes(),
             peak_disk_usage_bytes: aggregate.peak_disk_usage_bytes(),
+            log_count: 0,
+            recent_logs: Vec::new(),
         };
         emit_event(&WorkerEvent::Finished { summary })?;
         Ok(())
@@ -447,7 +453,7 @@ fn spawn_workers(
             let accumulator = accumulator.clone();
             let errors = errors.clone();
             thread::spawn(move || {
-                let engine = match open_engine(config.engine, &data_dir, config.durability) {
+                let engine = match open_engine(&config, &data_dir) {
                     Ok(engine) => engine,
                     Err(error) => {
                         errors.record(format!(
@@ -682,6 +688,7 @@ fn artifact_paths(run_dir: &Path, data_dir: &Path) -> ArtifactPaths {
         summary_path: run_dir.join("summary.json").display().to_string(),
         control_events_path: run_dir.join("control-events.jsonl").display().to_string(),
         data_dir: data_dir.display().to_string(),
+        logs_path: run_dir.join("logs.jsonl").display().to_string(),
     }
 }
 
@@ -704,7 +711,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use benchmark_core::{DurabilityPreset, EngineKind, LoadConfig, ScenarioConfig};
+    use benchmark_core::{EngineKind, LoadConfig, ScenarioConfig, StorageConfig};
 
     fn config() -> BenchmarkConfig {
         BenchmarkConfig {
@@ -724,7 +731,8 @@ mod tests {
                 mix: OperationMix::default(),
             },
             ramp_schedule: vec![],
-            durability: DurabilityPreset::Balanced,
+            storage: StorageConfig::default(),
+            durability: None,
         }
     }
 

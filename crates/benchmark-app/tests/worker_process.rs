@@ -1,6 +1,6 @@
 use benchmark_core::{
-    BenchmarkConfig, ControlMessage, DurabilityPreset, EngineKind, LoadConfig, OperationMix,
-    ScenarioConfig, WorkerEvent,
+    BenchmarkConfig, ControlMessage, EngineKind, LoadConfig, OperationMix, ScenarioConfig,
+    StorageConfig, WorkerEvent,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -27,7 +27,8 @@ fn worker_process_streams_samples_and_finishes_with_live_updates() {
             mix: OperationMix::default(),
         },
         ramp_schedule: vec![],
-        durability: DurabilityPreset::Balanced,
+        storage: StorageConfig::default(),
+        durability: None,
     };
     std::fs::write(
         &config_path,
@@ -65,6 +66,7 @@ fn worker_process_streams_samples_and_finishes_with_live_updates() {
                 stdin.flush().expect("flush control");
             }
             WorkerEvent::ControlApplied { .. } => {}
+            WorkerEvent::Log { .. } => {}
             WorkerEvent::Sample { .. } => saw_sample = true,
             WorkerEvent::Finished { .. } => {
                 saw_finished = true;

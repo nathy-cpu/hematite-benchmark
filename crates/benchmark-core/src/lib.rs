@@ -4,10 +4,11 @@ mod message;
 
 pub use aggregate::{RunAggregate, SampleAccumulator, SampleSnapshot};
 pub use config::{
-    BenchmarkConfig, DurabilityPreset, EngineKind, IoPrecision, LoadConfig, OperationKind,
-    OperationMix, RampPhase, ScenarioConfig,
+    BenchmarkConfig, DurabilityPreset, EngineKind, HematiteJournalMode, HematiteStorageConfig,
+    IoPrecision, LoadConfig, OperationKind, OperationMix, RampPhase, ScenarioConfig,
+    SqliteJournalMode, SqliteStorageConfig, SqliteSynchronousMode, StorageConfig,
 };
 pub use message::{
     AppliedControlEvent, ArtifactPaths, ControlMessage, ControlSource, MetricSample, RunDetail,
-    RunListItem, RunStatus, RunSummary, WorkerEvent,
+    RunListItem, RunLogEntry, RunLogLevel, RunLogSource, RunStatus, RunSummary, WorkerEvent,
 };

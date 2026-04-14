@@ -24,6 +24,119 @@ pub enum DurabilityPreset {
     Fast,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SqliteJournalMode {
+    Delete,
+    Truncate,
+    Persist,
+    Memory,
+    Wal,
+    Off,
+}
+
+impl SqliteJournalMode {
+    pub fn as_pragma_value(self) -> &'static str {
+        match self {
+            Self::Delete => "DELETE",
+            Self::Truncate => "TRUNCATE",
+            Self::Persist => "PERSIST",
+            Self::Memory => "MEMORY",
+            Self::Wal => "WAL",
+            Self::Off => "OFF",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SqliteSynchronousMode {
+    Off,
+    Normal,
+    Full,
+    Extra,
+}
+
+impl SqliteSynchronousMode {
+    pub fn as_pragma_value(self) -> &'static str {
+        match self {
+            Self::Off => "OFF",
+            Self::Normal => "NORMAL",
+            Self::Full => "FULL",
+            Self::Extra => "EXTRA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HematiteJournalMode {
+    Rollback,
+    Wal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqliteStorageConfig {
+    pub journal_mode: SqliteJournalMode,
+    pub synchronous: SqliteSynchronousMode,
+}
+
+impl Default for SqliteStorageConfig {
+    fn default() -> Self {
+        Self {
+            journal_mode: SqliteJournalMode::Wal,
+            synchronous: SqliteSynchronousMode::Normal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HematiteStorageConfig {
+    pub journal_mode: HematiteJournalMode,
+}
+
+impl Default for HematiteStorageConfig {
+    fn default() -> Self {
+        Self {
+            journal_mode: HematiteJournalMode::Wal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StorageConfig {
+    #[serde(default)]
+    pub sqlite: SqliteStorageConfig,
+    #[serde(default)]
+    pub hematite: HematiteStorageConfig,
+}
+
+impl From<DurabilityPreset> for StorageConfig {
+    fn from(value: DurabilityPreset) -> Self {
+        match value {
+            DurabilityPreset::Safe => Self {
+                sqlite: SqliteStorageConfig {
+                    journal_mode: SqliteJournalMode::Wal,
+                    synchronous: SqliteSynchronousMode::Full,
+                },
+                hematite: HematiteStorageConfig {
+                    journal_mode: HematiteJournalMode::Wal,
+                },
+            },
+            DurabilityPreset::Balanced => Self::default(),
+            DurabilityPreset::Fast => Self {
+                sqlite: SqliteStorageConfig {
+                    journal_mode: SqliteJournalMode::Memory,
+                    synchronous: SqliteSynchronousMode::Off,
+                },
+                hematite: HematiteStorageConfig {
+                    journal_mode: HematiteJournalMode::Rollback,
+                },
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum IoPrecision {
@@ -152,7 +265,10 @@ pub struct BenchmarkConfig {
     pub load: LoadConfig,
     #[serde(default)]
     pub ramp_schedule: Vec<RampPhase>,
-    pub durability: DurabilityPreset,
+    #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durability: Option<DurabilityPreset>,
 }
 
 impl BenchmarkConfig {
@@ -210,6 +326,15 @@ impl BenchmarkConfig {
             self.load.mix = mix.clone();
         }
     }
+
+    pub fn resolved_storage(&self) -> StorageConfig {
+        if self.storage == StorageConfig::default() {
+            if let Some(legacy) = self.durability {
+                return legacy.into();
+            }
+        }
+        self.storage.clone()
+    }
 }
 
 #[cfg(test)]
@@ -223,7 +348,8 @@ mod tests {
             scenario: ScenarioConfig::default(),
             load: LoadConfig::default(),
             ramp_schedule: vec![],
-            durability: DurabilityPreset::Balanced,
+            storage: StorageConfig::default(),
+            durability: None,
         }
     }
 
@@ -272,5 +398,17 @@ mod tests {
         ];
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn falls_back_to_legacy_durability_when_needed() {
+        let mut config = valid_config();
+        config.durability = Some(DurabilityPreset::Fast);
+
+        let storage = config.resolved_storage();
+
+        assert_eq!(storage.sqlite.journal_mode, SqliteJournalMode::Memory);
+        assert_eq!(storage.sqlite.synchronous, SqliteSynchronousMode::Off);
+        assert_eq!(storage.hematite.journal_mode, HematiteJournalMode::Rollback);
     }
 }

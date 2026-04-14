@@ -55,14 +55,6 @@
                     </select>
                   </label>
                   <label>
-                    <span>Durability</span>
-                    <select name="durability">
-                      <option value="balanced">Balanced</option>
-                      <option value="safe">Safe</option>
-                      <option value="fast">Fast</option>
-                    </select>
-                  </label>
-                  <label>
                     <span>Run profile</span>
                     <select name="test_profile" id="test-profile">
                       <option value="quick">Quick check</option>
@@ -71,6 +63,55 @@
                       <option value="custom">Custom</option>
                     </select>
                   </label>
+                </div>
+
+                <div class="panel inset-panel">
+                  <div class="section-head compact">
+                    <div>
+                      <p class="section-kicker">Engine Settings</p>
+                      <h3>Storage Behavior</h3>
+                    </div>
+                    <p class="hint">
+                      These are the exact database settings the benchmark will apply for the selected engine.
+                    </p>
+                  </div>
+
+                  <div id="sqlite-settings-panel" data-engine-panel="sqlite">
+                    <div class="grid two">
+                      <label>
+                        <span>SQLite journal mode</span>
+                        <select name="sqlite_journal_mode">
+                          <option value="wal">WAL</option>
+                          <option value="delete">DELETE</option>
+                          <option value="truncate">TRUNCATE</option>
+                          <option value="persist">PERSIST</option>
+                          <option value="memory">MEMORY</option>
+                          <option value="off">OFF</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>SQLite synchronous</span>
+                        <select name="sqlite_synchronous">
+                          <option value="normal">NORMAL</option>
+                          <option value="full">FULL</option>
+                          <option value="extra">EXTRA</option>
+                          <option value="off">OFF</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div id="hematite-settings-panel" data-engine-panel="hematite" hidden>
+                    <div class="grid two">
+                      <label>
+                        <span>Hematite journal mode</span>
+                        <select name="hematite_journal_mode">
+                          <option value="wal">WAL</option>
+                          <option value="rollback">ROLLBACK</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
                 </div>
 
                 <div class="panel inset-panel">
@@ -207,6 +248,16 @@
               </div>
               <div id="dashboard-summary" class="summary-cards"></div>
               <div id="dashboard-warnings" class="warning-list"></div>
+              <div class="panel inset-panel">
+                <div class="section-head compact">
+                  <div>
+                    <p class="section-kicker">Run Log</p>
+                    <h3>Live Events</h3>
+                  </div>
+                  <p class="hint">Brief lifecycle, sample, and error messages for the focused run.</p>
+                </div>
+                <div id="dashboard-logs" class="log-console"></div>
+              </div>
             </section>
 
             <section class="panel">
@@ -307,6 +358,16 @@
                 </div>
               </div>
               <div id="history-summary" class="summary-cards"></div>
+              <div class="panel inset-panel">
+                <div class="section-head compact">
+                  <div>
+                    <p class="section-kicker">Saved Logs</p>
+                    <h3>Recent Run Events</h3>
+                  </div>
+                  <p class="hint">Latest persisted events for the runs you selected.</p>
+                </div>
+                <div id="history-logs" class="log-console"></div>
+              </div>
             </section>
           </div>
 
