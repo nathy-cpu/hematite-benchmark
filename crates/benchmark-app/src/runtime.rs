@@ -3,8 +3,8 @@ use crate::metrics::{IoCounters, current_io_counters, current_rss_bytes, dir_siz
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
     AppliedControlEvent, ArtifactPaths, BenchmarkConfig, ControlMessage, ControlSource,
-    MetricSample, OperationKind, OperationMix, RunAggregate, RunStatus, RunSummary,
-    SampleAccumulator, WorkerEvent,
+    MetricSample, OperationKind, OperationMix, RunAggregate, RunLogEntry, RunLogLevel,
+    RunLogSource, RunStatus, RunSummary, SampleAccumulator, WorkerEvent,
 };
 use rand::Rng;
 use serde_json::Deserializer;
@@ -180,16 +180,17 @@ struct RuntimeErrors {
 }
 
 impl RuntimeErrors {
-    fn record(&self, message: impl Into<String>) {
+    fn record(&self, message: impl Into<String>) -> Option<String> {
         let message = message.into();
         self.total.fetch_add(1, Ordering::Relaxed);
         let mut messages = self.messages.lock().expect("error messages lock poisoned");
         if messages.len() >= MAX_ERROR_MESSAGES
             || messages.iter().any(|existing| existing == &message)
         {
-            return;
+            return None;
         }
-        messages.push(message);
+        messages.push(message.clone());
+        Some(message)
     }
 
     fn count(&self) -> u64 {
@@ -299,6 +300,7 @@ impl WorkerRuntime {
         let _control_reader = spawn_control_reader(self.run_id.clone(), control.clone());
         let scheduler = spawn_scheduler(self.run_id.clone(), control.clone(), self.config.clone());
         let workers = spawn_workers(
+            self.run_id.clone(),
             self.data_dir.clone(),
             self.config.clone(),
             control.clone(),
@@ -436,6 +438,7 @@ fn spawn_scheduler(
 }
 
 fn spawn_workers(
+    run_id: String,
     data_dir: PathBuf,
     config: BenchmarkConfig,
     control: RuntimeControl,
@@ -446,6 +449,7 @@ fn spawn_workers(
     let max_concurrency = max_runtime_concurrency(&config);
     (0..max_concurrency)
         .map(|index| {
+            let run_id = run_id.clone();
             let data_dir = data_dir.clone();
             let config = config.clone();
             let control = control.clone();
@@ -456,15 +460,27 @@ fn spawn_workers(
                 let engine = match open_engine(&config, &data_dir) {
                     Ok(engine) => engine,
                     Err(error) => {
-                        errors.record(format!(
+                        let message = format!(
                             "worker {index} failed to open {} engine: {error}",
                             config.engine.as_str()
-                        ));
+                        );
+                        if let Some(message) = errors.record(message) {
+                            let _ = emit_runtime_log(&run_id, RunLogLevel::Error, message);
+                        }
                         control.stop.store(true, Ordering::Relaxed);
                         return;
                     }
                 };
-                worker_loop(index, engine, config, control, next_id, accumulator, errors);
+                worker_loop(
+                    &run_id,
+                    index,
+                    engine,
+                    config,
+                    control,
+                    next_id,
+                    accumulator,
+                    errors,
+                );
             })
         })
         .collect()
@@ -481,6 +497,7 @@ fn max_runtime_concurrency(config: &BenchmarkConfig) -> usize {
 }
 
 fn worker_loop(
+    run_id: &str,
     index: usize,
     mut engine: Box<dyn EngineAdapter>,
     config: BenchmarkConfig,
@@ -532,7 +549,10 @@ fn worker_loop(
                 }
                 Err(error) => {
                     stats.record_error();
-                    errors.record(format!("worker {index} {op:?} failed: {error}"));
+                    let message = format!("worker {index} {op:?} failed: {error}");
+                    if let Some(message) = errors.record(message) {
+                        let _ = emit_runtime_log(run_id, RunLogLevel::Error, message);
+                    }
                 }
             }
         }
@@ -699,6 +719,18 @@ fn emit_event(event: &WorkerEvent) -> Result<()> {
     writeln!(&mut handle)?;
     handle.flush()?;
     Ok(())
+}
+
+fn emit_runtime_log(run_id: &str, level: RunLogLevel, message: impl Into<String>) -> Result<()> {
+    emit_event(&WorkerEvent::Log {
+        run_id: run_id.to_string(),
+        entry: RunLogEntry {
+            timestamp_ms: now_ms(),
+            level,
+            source: RunLogSource::WorkerEvent,
+            message: message.into(),
+        },
+    })
 }
 
 fn now_ms() -> u64 {

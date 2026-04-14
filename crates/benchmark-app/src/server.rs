@@ -633,7 +633,9 @@ async fn handle_worker_event(
                 run.active = None;
             }
         }
-        WorkerEvent::Log { .. } => {}
+        WorkerEvent::Log { entry, .. } => {
+            record_run_log(state, run_id, entry).await?;
+        }
         WorkerEvent::Failed { message, .. } => {
             warn!("worker failed: {message}");
             record_run_log(
