@@ -2,7 +2,7 @@ use crate::engine::{EngineAdapter, execute_operation, logical_bytes_for_operatio
 use crate::metrics::{IoCounters, current_io_counters, current_rss_bytes, dir_size_bytes};
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
-    AppliedControlEvent, ArtifactPaths, BenchmarkConfig, ControlMessage, ControlSource,
+    AppliedControlEvent, ArtifactPaths, BenchmarkConfig, ControlMessage, ControlSource, EngineKind,
     MetricSample, OperationKind, OperationMix, RunAggregate, RunLogEntry, RunLogLevel,
     RunLogSource, RunStatus, RunSummary, SampleAccumulator, WorkerEvent,
 };
@@ -278,9 +278,41 @@ impl WorkerRuntime {
 
     fn run(self) -> Result<()> {
         let started_at_ms = now_ms();
+        emit_runtime_log(
+            &self.run_id,
+            RunLogLevel::Info,
+            format!(
+                "Worker startup: engine={}, storage={}",
+                self.config.engine.as_str(),
+                describe_storage(&self.config)
+            ),
+        )?;
+        emit_runtime_log(
+            &self.run_id,
+            RunLogLevel::Info,
+            format!(
+                "Preparing dataset with {} seed rows",
+                self.config.scenario.initial_rows
+            ),
+        )?;
         let mut setup_engine = open_engine(&self.config, &self.data_dir)?;
         setup_engine.prepare_dataset(&self.config)?;
+        emit_runtime_log(
+            &self.run_id,
+            RunLogLevel::Info,
+            "Dataset preparation finished",
+        )?;
+        emit_runtime_log(
+            &self.run_id,
+            RunLogLevel::Debug,
+            "Running startup flush/checkpoint",
+        )?;
         setup_engine.flush()?;
+        emit_runtime_log(
+            &self.run_id,
+            RunLogLevel::Info,
+            "Startup flush/checkpoint finished",
+        )?;
         let mut warnings = setup_engine.warnings().to_vec();
         drop(setup_engine);
 
@@ -731,6 +763,19 @@ fn emit_runtime_log(run_id: &str, level: RunLogLevel, message: impl Into<String>
             message: message.into(),
         },
     })
+}
+
+fn describe_storage(config: &BenchmarkConfig) -> String {
+    let storage = config.resolved_storage();
+    match config.engine {
+        EngineKind::Sqlite => format!(
+            "sqlite journal_mode={:?}, synchronous={:?}",
+            storage.sqlite.journal_mode, storage.sqlite.synchronous
+        ),
+        EngineKind::Hematite => {
+            format!("hematite journal_mode={:?}", storage.hematite.journal_mode)
+        }
+    }
 }
 
 fn now_ms() -> u64 {

@@ -600,6 +600,36 @@ async fn handle_worker_event(
             let status = summary.status.clone();
             let avg_writes = summary.avg_writes_per_sec;
             let avg_reads = summary.avg_reads_per_sec;
+            let missing_error_logs = {
+                let runs = state.runs.read().await;
+                runs.get(run_id)
+                    .map(|run| {
+                        summary
+                            .error_messages
+                            .iter()
+                            .filter(|message| {
+                                !run.recent_logs
+                                    .iter()
+                                    .any(|entry| entry.message == **message)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            for message in missing_error_logs {
+                record_run_log(
+                    state,
+                    run_id,
+                    RunLogEntry {
+                        timestamp_ms: now_ms(),
+                        level: RunLogLevel::Error,
+                        source: RunLogSource::WorkerEvent,
+                        message,
+                    },
+                )
+                .await?;
+            }
             record_run_log(
                 state,
                 run_id,

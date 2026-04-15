@@ -242,9 +242,12 @@ impl EngineAdapter for HematiteAdapter {
         "#,
         )?;
 
+        // Batch the initial inserts inside a single transaction to avoid
+        // committing each INSERT individually (very slow with WAL/flush-heavy storage).
+        let mut tx = self.db.transaction()?;
         for id in 1..=config.scenario.initial_rows {
             let row = make_row(config, id);
-            self.db.execute(&format!(
+            tx.execute(&format!(
                 "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES ({}, {}, {}, {}, {});",
                 row.id,
                 sql_string_literal(&row.category),
@@ -253,6 +256,7 @@ impl EngineAdapter for HematiteAdapter {
                 row.updated_at
             ))?;
         }
+        tx.commit()?;
         Ok(())
     }
 
