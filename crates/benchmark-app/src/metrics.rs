@@ -11,6 +11,17 @@ pub struct IoCounters {
 }
 
 pub fn current_rss_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(contents) = fs::read_to_string("/proc/self/statm") {
+            if let Some(rss_pages) = contents.split_whitespace().nth(1) {
+                if let Ok(pages) = rss_pages.parse::<u64>() {
+                    return pages * 4096; // Standard 4KB page size
+                }
+            }
+        }
+    }
+
     let mut system = System::new();
     let pid = Pid::from_u32(std::process::id());
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);

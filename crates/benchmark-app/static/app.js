@@ -931,17 +931,15 @@ function renderChartGroup(prefix, runs) {
 function renderChartLegend(containerId, runs, metrics) {
   const container = document.getElementById(containerId);
   if (!container) return;
-  if (!container) {
-    return;
-  }
   let seriesIndex = 0;
   const items = [];
   runs.forEach((run) => {
-    metrics.forEach((metric) => {
+    metrics.forEach((metric, metricIndex) => {
       const color = colors[seriesIndex % colors.length];
+      const isDashed = metricIndex > 0;
       items.push(`
         <div class="legend-item">
-          <span class="legend-swatch" style="background:${color}"></span>
+          <span class="legend-swatch ${isDashed ? "is-dashed" : ""}" style="background:${color}; border-color:${color}"></span>
           <span>${run.config?.run_name || run.run_id} • ${metric.label}</span>
         </div>
       `);
@@ -1084,20 +1082,24 @@ function drawChart(containerId, runs, metrics) {
 
 function renderSeriesStats(containerId, runs, metrics) {
   const container = document.getElementById(containerId);
+  if (!container) return;
   if (!runs.length) {
     container.innerHTML = "";
     return;
   }
 
+  let seriesIndex = 0;
   const cards = [];
   runs.forEach((run) => {
     metrics.forEach((metric) => {
       const stats = computeStats(run.samples || [], metric.key);
       if (!stats) {
+        seriesIndex += 1;
         return;
       }
+      const color = colors[seriesIndex % colors.length];
       cards.push(`
-        <div class="series-card">
+        <div class="series-card" style="border-left: 4px solid ${color}">
           <div class="series-label">${run.config?.run_name || run.run_id} • ${metric.label}</div>
           <div class="metric-grid">
             <div><span>Current</span><strong>${metric.format(stats.current)}</strong></div>
@@ -1109,6 +1111,7 @@ function renderSeriesStats(containerId, runs, metrics) {
           </div>
         </div>
       `);
+      seriesIndex += 1;
     });
   });
   container.innerHTML = cards.join("");

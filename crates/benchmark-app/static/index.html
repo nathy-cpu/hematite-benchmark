@@ -282,16 +282,19 @@
                   <div id="dashboard-latency-stats"></div>
                 </div>
                 <div class="panel span-4 chart-panel">
-                  <div class="chart-header"><h2>Memory (RSS)</h2></div>
+                  <div class="chart-header"><h2>Memory (RSS)</h2><div id="dashboard-memory-legend" class="chart-legend"></div></div>
                   <canvas id="dashboard-memory-chart"></canvas>
+                  <div id="dashboard-memory-stats" class="stats-row" style="margin-top: 12px;"></div>
                 </div>
                 <div class="panel span-4 chart-panel">
-                  <div class="chart-header"><h2>Disk I/O</h2></div>
+                  <div class="chart-header"><h2>Disk I/O</h2><div id="dashboard-io-legend" class="chart-legend"></div></div>
                   <canvas id="dashboard-io-chart"></canvas>
+                  <div id="dashboard-io-stats" class="stats-row" style="margin-top: 12px;"></div>
                 </div>
                 <div class="panel span-4 chart-panel">
-                  <div class="chart-header"><h2>Disk Usage</h2></div>
+                  <div class="chart-header"><h2>Disk Usage</h2><div id="dashboard-disk-legend" class="chart-legend"></div></div>
                   <canvas id="dashboard-disk-chart"></canvas>
+                  <div id="dashboard-disk-stats" class="stats-row" style="margin-top: 12px;"></div>
                 </div>
               </div>
             </div>
@@ -370,22 +373,27 @@
                 <div class="panel span-12 chart-panel">
                   <div class="chart-header"><h2>Throughput Comparison</h2><div id="history-throughput-legend" class="chart-legend"></div></div>
                   <canvas id="history-throughput-chart"></canvas>
+                  <div id="history-throughput-stats" class="stats-row" style="margin-top: 16px;"></div>
                 </div>
                 <div class="panel span-12 chart-panel">
                   <div class="chart-header"><h2>Latency Comparison</h2><div id="history-latency-legend" class="chart-legend"></div></div>
                   <canvas id="history-latency-chart"></canvas>
+                  <div id="history-latency-stats" class="stats-row" style="margin-top: 16px;"></div>
                 </div>
                 <div class="panel span-12 chart-panel">
                   <div class="chart-header"><h2>Memory Comparison</h2><div id="history-memory-legend" class="chart-legend"></div></div>
                   <canvas id="history-memory-chart"></canvas>
+                  <div id="history-memory-stats" class="stats-row" style="margin-top: 16px;"></div>
                 </div>
                 <div class="panel span-12 chart-panel">
                   <div class="chart-header"><h2>Disk I/O Comparison</h2><div id="history-io-legend" class="chart-legend"></div></div>
                   <canvas id="history-io-chart"></canvas>
+                  <div id="history-io-stats" class="stats-row" style="margin-top: 16px;"></div>
                 </div>
                 <div class="panel span-12 chart-panel">
                   <div class="chart-header"><h2>Disk Usage Comparison</h2><div id="history-disk-legend" class="chart-legend"></div></div>
                   <canvas id="history-disk-chart"></canvas>
+                  <div id="history-disk-stats" class="stats-row" style="margin-top: 16px;"></div>
                 </div>
               </div>
             </div>

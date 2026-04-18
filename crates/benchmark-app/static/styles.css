@@ -298,7 +298,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
 }
 
 .legend-item {
@@ -306,9 +306,23 @@ body {
   align-items: center;
   gap: 6px;
   color: var(--text-dim);
+  white-space: nowrap;
 }
 
-.legend-color { width: 10px; height: 10px; border-radius: 2px; }
+.legend-swatch {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+  position: relative;
+}
+
+.legend-swatch.is-dashed {
+  background: transparent !important;
+  border-top: 2px dashed;
+  border-color: inherit;
+  height: 0;
+  width: 16px;
+}
 
 canvas {
   width: 100% !important;
