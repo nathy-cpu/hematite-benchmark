@@ -890,6 +890,38 @@ function renderHistoryCharts() {
     .map((runId) => state.runDetails.get(runId))
     .filter(Boolean);
   renderChartGroup("history", runs);
+  renderHistoryErrors();
+}
+
+function renderHistoryErrors() {
+  const container = document.getElementById("history-errors-container");
+  if (!container) return;
+  const details = [...state.historySelection]
+    .map((runId) => ({ run: getRunById(runId), detail: state.runDetails.get(runId) }))
+    .filter((entry) => entry.run && entry.detail);
+
+  if (!details.length) {
+    container.innerHTML = '<div class="empty-state">Select runs to analyze their specific error reports.</div>';
+    return;
+  }
+
+  container.innerHTML = details.map(({ run, detail }) => {
+    const summary = run.summary || detail.summary;
+    const errors = summary?.error_messages || [];
+    return `
+      <div class="series-card" style="margin-bottom: 24px;">
+        <div class="series-label" style="font-weight: 700; color: var(--danger); margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--danger);"></span>
+          ${run.run_name} • Error Analysis
+        </div>
+        ${errors.length ? `
+          <div class="warning-list">
+            ${errors.map(err => `<div class="warning-item is-error" style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">${escapeHtml(err)}</div>`).join("")}
+          </div>
+        ` : '<div class="empty-state">No specific error messages recorded for this run.</div>'}
+      </div>
+    `;
+  }).join("");
 }
 
 function renderHistoryLogs() {

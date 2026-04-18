@@ -361,11 +361,16 @@
             <div class="tabs" id="history-tabs">
               <button class="tab-btn is-active" data-tab="comparison">Comparison Summary</button>
               <button class="tab-btn" data-tab="history-charts">Metric Overlay</button>
+              <button class="tab-btn" data-tab="history-errors">Error Analysis</button>
               <button class="tab-btn" data-tab="history-logs">Event Logs</button>
             </div>
 
             <div class="tab-content" id="tab-comparison">
               <div id="history-summary" class="artifact-grid"></div>
+            </div>
+
+            <div class="tab-content" id="tab-history-errors" style="display: none;">
+              <div id="history-errors-container"></div>
             </div>
 
             <div class="tab-content" id="tab-history-charts" style="display: none;">
