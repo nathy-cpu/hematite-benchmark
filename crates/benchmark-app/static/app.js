@@ -241,32 +241,39 @@ function applyDurationPreset(presetKey) {
     return;
   }
   const form = document.getElementById("run-form");
-  form.duration_value.value = preset.value;
-  form.duration_unit.value = preset.unit;
-  form.test_profile.value = presetKey;
-  document.getElementById("duration-help").textContent = preset.help;
+  if (!form) return;
+  
+  if (form.duration_value) form.duration_value.value = preset.value;
+  if (form.duration_unit) form.duration_unit.value = preset.unit;
+  if (form.test_profile) form.test_profile.value = presetKey;
+  
+  const help = document.getElementById("duration-help");
+  if (help) help.textContent = preset.help;
+  
   renderSetupSummary();
 }
 
 function setupDurationControls() {
   const form = document.getElementById("run-form");
   const profile = document.getElementById("test-profile");
-  profile.addEventListener("change", () => {
-    if (profile.value !== "custom") {
-      applyDurationPreset(profile.value);
-    } else {
-      document.getElementById("duration-help").textContent =
-        "Custom duration lets you set your own soak window for longer or shorter experiments.";
-      renderSetupSummary();
-    }
-  });
+  if (profile) {
+    profile.addEventListener("change", () => {
+      if (profile.value !== "custom") {
+        applyDurationPreset(profile.value);
+      } else {
+        const help = document.getElementById("duration-help");
+        if (help) help.textContent = "Custom duration lets you set your own soak window for longer or shorter experiments.";
+        renderSetupSummary();
+      }
+    });
+  }
 
   document.querySelectorAll("[data-duration-preset]").forEach((button) => {
     button.addEventListener("click", () => applyDurationPreset(button.dataset.durationPreset));
   });
 
   ["input", "change"].forEach((eventName) => {
-    form.addEventListener(eventName, () => renderSetupSummary());
+    form?.addEventListener(eventName, () => renderSetupSummary());
   });
 
   applyDurationPreset("quick");
@@ -292,37 +299,37 @@ function parseRampSchedule(raw, options = {}) {
 }
 
 function readFormState(form, options = {}) {
-  const rampResult = parseRampSchedule(form.ramp_schedule.value, options);
+  const rampResult = parseRampSchedule(form.ramp_schedule?.value || "", options);
   return {
     config: {
-      run_name: form.run_name.value.trim(),
-      engine: form.engine.value,
+      run_name: form.run_name?.value.trim() || "unnamed",
+      engine: form.engine?.value || "hematite",
       scenario: {
-        initial_rows: Number(form.initial_rows.value),
-        payload_size_bytes: Number(form.payload_size_bytes.value),
-        category_count: Number(form.category_count.value),
-        range_scan_size: Number(form.range_scan_size.value),
+        initial_rows: Number(form.initial_rows?.value || 0),
+        payload_size_bytes: Number(form.payload_size_bytes?.value || 0),
+        category_count: Number(form.category_count?.value || 0),
+        range_scan_size: Number(form.range_scan_size?.value || 0),
       },
       load: {
-        concurrency: Number(form.concurrency.value),
-        batch_size: Number(form.batch_size.value),
-        duration_secs: durationToSeconds(form.duration_value.value, form.duration_unit.value),
-        sample_interval_ms: Number(form.sample_interval_ms.value),
+        concurrency: Number(form.concurrency?.value || 0),
+        batch_size: Number(form.batch_size?.value || 0),
+        duration_secs: durationToSeconds(form.duration_value?.value || 0, form.duration_unit?.value || "seconds"),
+        sample_interval_ms: Number(form.sample_interval_ms?.value || 0),
         mix: {
-          point_reads: Number(form.point_reads.value),
-          range_scans: Number(form.range_scans.value),
-          inserts: Number(form.inserts.value),
-          updates: Number(form.updates.value),
+          point_reads: Number(form.point_reads?.value || 0),
+          range_scans: Number(form.range_scans?.value || 0),
+          inserts: Number(form.inserts?.value || 0),
+          updates: Number(form.updates?.value || 0),
         },
       },
       ramp_schedule: rampResult.value,
       storage: {
         sqlite: {
-          journal_mode: form.sqlite_journal_mode.value,
-          synchronous: form.sqlite_synchronous.value,
+          journal_mode: form.sqlite_journal_mode?.value || "wal",
+          synchronous: form.sqlite_synchronous?.value || "normal",
         },
         hematite: {
-          journal_mode: form.hematite_journal_mode.value,
+          journal_mode: form.hematite_journal_mode?.value || "wal",
         },
       },
       profiling: (function () {
@@ -331,7 +338,7 @@ function readFormState(form, options = {}) {
         const perfOut = document.getElementById("run-perf-output")?.value || "";
         const perfFreq = document.getElementById("run-perf-freq")?.value || "";
         const perfGen = document.getElementById("run-perf-generate-flamegraph")?.checked;
-        const straceOut = document.getElementById("run-strace-output")?.value || "";
+        const straceOut = document.getElementById("run-worker-strace-output")?.value || "";
         const anySet = perfEnabled || straceEnabled || perfOut !== "" || perfFreq !== "" || straceOut !== "";
         if (!anySet) return null;
         return {
@@ -518,6 +525,7 @@ function renderHistoryList() {
       }
       renderHistorySummary();
       renderHistoryCharts();
+      renderHistoryLogs();
     });
     container.appendChild(row);
   });
@@ -539,11 +547,19 @@ async function refreshRuns() {
   }
 
   if (state.activeRunId) {
-    const detail = await ensureRunDetail(state.activeRunId);
-    syncLiveControlsFromDetail(detail);
+    try {
+      const detail = await ensureRunDetail(state.activeRunId);
+      if (detail) syncLiveControlsFromDetail(detail);
+    } catch (e) {
+      console.warn("failed to ensure active run detail", e);
+    }
   }
   for (const runId of state.historySelection) {
-    await ensureRunDetail(runId);
+    try {
+      await ensureRunDetail(runId);
+    } catch (e) {
+      console.warn(`failed to ensure history run detail for ${runId}`, e);
+    }
   }
 
   renderDashboardSummary();
@@ -888,11 +904,13 @@ function renderHistoryLogs() {
   }
 
   container.innerHTML = details.map(({ run, detail }) => {
-    const logs = detail.logs || detail.summary?.recent_logs || [];
+    const logs = detail?.logs || detail?.summary?.recent_logs || [];
     return `
-      <div class="series-card">
-        <div class="series-label">${run.run_name} • ${run.engine}</div>
-        ${logs.length ? renderLogEntries(logs.slice(-20)) : '<div class="empty-state">No logs saved for this run.</div>'}
+      <div class="series-card" style="margin-bottom: 24px;">
+        <div class="series-label" style="font-weight: 700; color: var(--accent); margin-bottom: 12px;">${run.run_name} • ${run.engine}</div>
+        <div class="log-viewport" style="max-height: 400px; overflow-y: auto; background: rgba(0,0,0,0.3);">
+          ${logs.length ? renderLogEntries(logs.slice(-50)) : '<div class="empty-state">No logs saved for this run.</div>'}
+        </div>
       </div>
     `;
   }).join("");
@@ -900,14 +918,19 @@ function renderHistoryLogs() {
 
 function renderChartGroup(prefix, runs) {
   chartDefinitions.forEach((definition) => {
-    renderChartLegend(`${prefix}-${definition.key}-legend`, runs, definition.metrics);
-    drawChart(`${prefix}-${definition.key}-chart`, runs, definition.metrics);
-    renderSeriesStats(`${prefix}-${definition.key}-stats`, runs, definition.metrics);
+    try {
+      renderChartLegend(`${prefix}-${definition.key}-legend`, runs, definition.metrics);
+      drawChart(`${prefix}-${definition.key}-chart`, runs, definition.metrics);
+      renderSeriesStats(`${prefix}-${definition.key}-stats`, runs, definition.metrics);
+    } catch (e) {
+      console.warn(`Failed to render ${prefix} chart for ${definition.key}`, e);
+    }
   });
 }
 
 function renderChartLegend(containerId, runs, metrics) {
   const container = document.getElementById(containerId);
+  if (!container) return;
   if (!container) {
     return;
   }
@@ -928,12 +951,22 @@ function renderChartLegend(containerId, runs, metrics) {
   container.innerHTML = items.join("");
 }
 
-function drawChart(canvasId, runs, metrics) {
-  const canvas = document.getElementById(canvasId);
+function drawChart(containerId, runs, metrics) {
+  const canvas = document.getElementById(containerId);
+  if (!canvas) return;
   const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
-  const margin = { top: 28, right: 28, bottom: 38, left: 86 };
+  if (!ctx) return;
+
+  // Use pixel-perfect scaling for sharp charts
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+
+  const width = rect.width;
+  const height = rect.height;
+  const margin = { top: 32, right: 32, bottom: 44, left: 86 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
 
@@ -949,24 +982,25 @@ function drawChart(canvasId, runs, metrics) {
     return;
   }
 
-  const maxElapsed = Math.max(
-    ...runs.map((run) => {
-      const samples = run.samples || [];
-      if (samples.length < 2) {
-        return 1;
-      }
-      return (samples.at(-1).timestamp_ms - samples[0].timestamp_ms) / 1000;
-    }),
-    1,
-  );
-  const maxValue = niceCeiling(
-    Math.max(
-      ...runs.flatMap((run) => (run.samples || []).flatMap((sample) =>
-        metrics.map((metric) => Number(sample[metric.key] || 0)),
-      )),
-      1,
-    ),
-  );
+  let globalMax = 1;
+  runs.forEach(run => {
+    (run.samples || []).forEach(sample => {
+      metrics.forEach(metric => {
+        const val = Number(sample[metric.key] || 0);
+        if (val > globalMax) globalMax = val;
+      });
+    });
+  });
+  const maxValue = niceCeiling(globalMax);
+
+  let maxElapsed = 1;
+  runs.forEach(run => {
+    const samples = run.samples || [];
+    if (samples.length >= 2) {
+      const elapsed = (samples.at(-1).timestamp_ms - samples[0].timestamp_ms) / 1000;
+      if (elapsed > maxElapsed) maxElapsed = elapsed;
+    }
+  });
 
   ctx.strokeStyle = "rgba(147, 173, 183, 0.18)";
   ctx.lineWidth = 1;
@@ -1129,6 +1163,8 @@ async function sendControl(runId, payload) {
 
 function setupForm() {
   const form = document.getElementById("run-form");
+  if (!form) return;
+
   form.engine.addEventListener("change", () => {
     syncEngineSettingPanels(form.engine.value);
     renderSetupSummary();
@@ -1158,7 +1194,7 @@ function setupForm() {
     }
   });
 
-  document.getElementById("jump-to-dashboard").addEventListener("click", () => navigateTo("dashboard"));
+  document.getElementById("jump-to-dashboard")?.addEventListener("click", () => navigateTo("dashboard"));
 }
 
 function setupControls() {
@@ -1176,29 +1212,29 @@ function setupControls() {
     renderDashboardCharts();
   });
 
-  concurrency.addEventListener("input", () => {
+  concurrency?.addEventListener("input", () => {
     syncConcurrencyControls(concurrency.value);
   });
-  concurrencyInput.addEventListener("input", () => {
+  concurrencyInput?.addEventListener("input", () => {
     syncConcurrencyControls(concurrencyInput.value);
   });
 
-  document.getElementById("pause-run").addEventListener("click", async () => {
+  document.getElementById("pause-run")?.addEventListener("click", async () => {
     if (state.activeRunId) {
       await sendControl(state.activeRunId, { kind: "pause" });
     }
   });
-  document.getElementById("resume-run").addEventListener("click", async () => {
+  document.getElementById("resume-run")?.addEventListener("click", async () => {
     if (state.activeRunId) {
       await sendControl(state.activeRunId, { kind: "resume" });
     }
   });
-  document.getElementById("stop-run").addEventListener("click", async () => {
+  document.getElementById("stop-run")?.addEventListener("click", async () => {
     if (state.activeRunId) {
       await sendControl(state.activeRunId, { kind: "stop" });
     }
   });
-  document.getElementById("apply-live-controls").addEventListener("click", async () => {
+  document.getElementById("apply-live-controls")?.addEventListener("click", async () => {
     if (!state.activeRunId) {
       return;
     }
@@ -1223,26 +1259,27 @@ function setupControls() {
     });
   });
   // Profiling controls: apply and dynamic enable/disable
-  const perfCheckbox = document.getElementById("worker-perf");
-  const perfFreq = document.getElementById("perf-freq");
-  const perfOutput = document.getElementById("perf-output");
-  const perfGenerate = document.getElementById("perf-generate-flamegraph");
-  const straceCheckbox = document.getElementById("worker-strace");
-  const straceOutput = document.getElementById("strace-output");
+  const perfCheckbox = document.getElementById("run-worker-perf");
+  const perfFreq = document.getElementById("run-perf-freq");
+  const perfOutput = document.getElementById("run-perf-output");
+  const perfGenerate = document.getElementById("run-perf-generate-flamegraph");
+  const straceCheckbox = document.getElementById("run-worker-strace");
+  const straceOutput = document.getElementById("run-worker-strace-output");
 
   function syncProfilingControls() {
+    if (!perfCheckbox) return;
     const perfEnabled = perfCheckbox.checked;
-    perfFreq.disabled = !perfEnabled;
-    perfOutput.disabled = !perfEnabled;
-    perfGenerate.disabled = !perfEnabled;
-    straceOutput.disabled = !straceCheckbox.checked;
+    if (perfFreq) perfFreq.disabled = !perfEnabled;
+    if (perfOutput) perfOutput.disabled = !perfEnabled;
+    if (perfGenerate) perfGenerate.disabled = !perfEnabled;
+    if (straceCheckbox && straceOutput) straceOutput.disabled = !straceCheckbox.checked;
     renderSetupSummary();
   }
 
-  perfCheckbox.addEventListener("change", syncProfilingControls);
-  straceCheckbox.addEventListener("change", syncProfilingControls);
+  perfCheckbox?.addEventListener("change", syncProfilingControls);
+  straceCheckbox?.addEventListener("change", syncProfilingControls);
 
-  document.getElementById("apply-profiling").addEventListener("click", async () => {
+  document.getElementById("apply-profiling")?.addEventListener("click", async () => {
     try {
       await applyServerOptions();
       alert("Profiling settings applied");
@@ -1353,12 +1390,19 @@ function formatMix(mix) {
 async function loadServerOptions() {
   try {
     const opts = await fetchJson("/api/options");
-    document.getElementById("worker-perf").checked = !!opts.worker_perf;
-    document.getElementById("perf-output").value = opts.worker_perf_output || "";
-    document.getElementById("perf-freq").value = opts.worker_perf_freq_hz || "";
-    document.getElementById("perf-generate-flamegraph").checked = opts.worker_perf_generate_flamegraph !== false;
-    document.getElementById("worker-strace").checked = !!opts.worker_strace;
-    document.getElementById("strace-output").value = opts.worker_strace_output || "";
+    const perfCb = document.getElementById("run-worker-perf");
+    const perfOut = document.getElementById("run-perf-output");
+    const perfFr = document.getElementById("run-perf-freq");
+    const perfGen = document.getElementById("run-perf-generate-flamegraph");
+    const straceCb = document.getElementById("run-worker-strace");
+    const straceOut = document.getElementById("run-worker-strace-output");
+
+    if (perfCb) perfCb.checked = !!opts.worker_perf;
+    if (perfOut) perfOut.value = opts.worker_perf_output || "";
+    if (perfFr) perfFr.value = opts.worker_perf_freq_hz || "";
+    if (perfGen) perfGen.checked = opts.worker_perf_generate_flamegraph !== false;
+    if (straceCb) straceCb.checked = !!opts.worker_strace;
+    if (straceOut) straceOut.value = opts.worker_strace_output || "";
   } catch (error) {
     console.warn("failed to load server options", error);
   }
@@ -1366,15 +1410,15 @@ async function loadServerOptions() {
 
 async function applyServerOptions() {
   const payload = {
-    worker_perf: document.getElementById("worker-perf").checked,
-    worker_perf_generate_flamegraph: document.getElementById("perf-generate-flamegraph").checked,
+    worker_perf: document.getElementById("run-worker-perf")?.checked,
+    worker_perf_generate_flamegraph: document.getElementById("run-perf-generate-flamegraph")?.checked,
     worker_perf_freq_hz: (function () {
-      const v = document.getElementById("perf-freq").value;
-      return v === "" ? null : Number(v);
+      const v = document.getElementById("run-perf-freq")?.value;
+      return v === "" || v === undefined ? null : Number(v);
     })(),
-    worker_perf_output: document.getElementById("perf-output").value || null,
-    worker_strace: document.getElementById("worker-strace").checked,
-    worker_strace_output: document.getElementById("strace-output").value || null,
+    worker_perf_output: document.getElementById("run-perf-output")?.value || null,
+    worker_strace: document.getElementById("run-worker-strace")?.checked,
+    worker_strace_output: document.getElementById("run-worker-strace-output")?.value || null,
   };
   const resp = await fetch("/api/options", {
     method: "POST",
@@ -1394,8 +1438,11 @@ async function boot() {
   await loadServerOptions();
   setupDurationControls();
   syncPageFromLocation();
-  syncEngineSettingPanels(document.getElementById("run-form").engine.value);
-  renderSetupSummary();
+  const runForm = document.getElementById("run-form");
+  if (runForm && runForm.engine) {
+    syncEngineSettingPanels(runForm.engine.value);
+    renderSetupSummary();
+  }
   await refreshRuns();
   setInterval(refreshRuns, 5000);
 }

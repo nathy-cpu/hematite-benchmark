@@ -164,6 +164,10 @@
                 <div class="field"><label>Initial Rows</label><input type="number" name="initial_rows" value="5000" /></div>
                 <div class="field"><label>Payload Size (B)</label><input type="number" name="payload_size_bytes" value="256" /></div>
                 <div class="field"><label>Concurrency</label><input type="number" name="concurrency" value="4" /></div>
+                <div class="field"><label>Category Count</label><input type="number" name="category_count" value="10" /></div>
+                <div class="field"><label>Range Scan Size</label><input type="number" name="range_scan_size" value="20" /></div>
+                <div class="field"><label>Batch Size</label><input type="number" name="batch_size" value="1" /></div>
+                <div class="field"><label>Sample Interval (ms)</label><input type="number" name="sample_interval_ms" value="1000" /></div>
               </div>
 
               <div class="mix-grid">
@@ -181,12 +185,33 @@
               <div class="panel inset-panel">
                 <h3>Profiling Options</h3>
                 <div class="grid two">
-                  <label class="checkbox-label">
-                    <input type="checkbox" id="run-worker-perf" /> Enable `perf`
-                  </label>
-                  <label class="checkbox-label">
-                    <input type="checkbox" id="run-worker-strace" /> Enable `strace`
-                  </label>
+                  <div class="field">
+                    <label class="checkbox-label">
+                      <input type="checkbox" id="run-worker-perf" /> Enable `perf`
+                    </label>
+                    <div class="grid two" style="margin-top: 8px;">
+                      <div class="field">
+                        <label>Frequency (Hz)</label>
+                        <input type="number" id="run-perf-freq" placeholder="99" />
+                      </div>
+                      <div class="field">
+                        <label>Output Path</label>
+                        <input type="text" id="run-perf-output" placeholder="perf.data" />
+                      </div>
+                    </div>
+                    <label class="checkbox-label" style="margin-top: 8px;">
+                      <input type="checkbox" id="run-perf-generate-flamegraph" checked /> Generate Flamegraph
+                    </label>
+                  </div>
+                  <div class="field">
+                    <label class="checkbox-label">
+                      <input type="checkbox" id="run-worker-strace" /> Enable `strace`
+                    </label>
+                    <div class="field" style="margin-top: 8px;">
+                      <label>Strace Output Path</label>
+                      <input type="text" id="run-worker-strace-output" placeholder="strace.txt" />
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -343,12 +368,24 @@
             <div class="tab-content" id="tab-history-charts" style="display: none;">
               <div class="dashboard-grid">
                 <div class="panel span-12 chart-panel">
-                  <div class="chart-header"><h2>Throughput Comparison</h2><div id="history-throughput-legend"></div></div>
+                  <div class="chart-header"><h2>Throughput Comparison</h2><div id="history-throughput-legend" class="chart-legend"></div></div>
                   <canvas id="history-throughput-chart"></canvas>
                 </div>
                 <div class="panel span-12 chart-panel">
-                  <div class="chart-header"><h2>Latency Comparison</h2><div id="history-latency-legend"></div></div>
+                  <div class="chart-header"><h2>Latency Comparison</h2><div id="history-latency-legend" class="chart-legend"></div></div>
                   <canvas id="history-latency-chart"></canvas>
+                </div>
+                <div class="panel span-12 chart-panel">
+                  <div class="chart-header"><h2>Memory Comparison</h2><div id="history-memory-legend" class="chart-legend"></div></div>
+                  <canvas id="history-memory-chart"></canvas>
+                </div>
+                <div class="panel span-12 chart-panel">
+                  <div class="chart-header"><h2>Disk I/O Comparison</h2><div id="history-io-legend" class="chart-legend"></div></div>
+                  <canvas id="history-io-chart"></canvas>
+                </div>
+                <div class="panel span-12 chart-panel">
+                  <div class="chart-header"><h2>Disk Usage Comparison</h2><div id="history-disk-legend" class="chart-legend"></div></div>
+                  <canvas id="history-disk-chart"></canvas>
                 </div>
               </div>
             </div>
