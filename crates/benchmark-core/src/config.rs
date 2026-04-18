@@ -269,6 +269,8 @@ pub struct BenchmarkConfig {
     pub storage: StorageConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durability: Option<DurabilityPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiling: Option<ProfilingConfig>,
 }
 
 impl BenchmarkConfig {
@@ -337,6 +339,22 @@ impl BenchmarkConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProfilingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_perf: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_perf_generate_flamegraph: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_perf_freq_hz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_perf_output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_strace: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_strace_output: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +368,7 @@ mod tests {
             ramp_schedule: vec![],
             storage: StorageConfig::default(),
             durability: None,
+            profiling: None,
         }
     }
 

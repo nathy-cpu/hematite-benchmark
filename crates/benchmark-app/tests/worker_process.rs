@@ -29,6 +29,7 @@ fn worker_process_streams_samples_and_finishes_with_live_updates() {
         ramp_schedule: vec![],
         storage: StorageConfig::default(),
         durability: None,
+        profiling: None,
     };
     std::fs::write(
         &config_path,

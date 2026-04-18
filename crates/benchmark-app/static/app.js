@@ -167,6 +167,13 @@ function renderPage() {
   document.querySelectorAll("[data-page-link]").forEach((link) => {
     link.classList.toggle("is-active", link.dataset.pageLink === state.currentPage);
   });
+  
+  const titles = {
+    setup: "Run Setup",
+    dashboard: "Live Monitoring",
+    history: "Session History"
+  };
+  document.getElementById("current-page-title").textContent = titles[state.currentPage] || "Hematite Lab";
 }
 
 function setupNavigation() {
@@ -176,6 +183,34 @@ function setupNavigation() {
       navigateTo(link.dataset.pageLink);
     });
   });
+
+  // Tab switching logic
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const group = btn.parentElement;
+      const tabId = btn.dataset.tab;
+      
+      // Update buttons
+      group.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      
+      // Update content
+      const contentContainer = group.parentElement;
+      contentContainer.querySelectorAll(".tab-content").forEach(c => {
+        c.style.display = c.id === `tab-${tabId}` ? "block" : "none";
+      });
+    });
+  });
+
+  // Log filtering/search logic
+  document.getElementById("log-search-input")?.addEventListener("input", renderDashboardLogs);
+  document.getElementById("log-level-filter")?.addEventListener("change", renderDashboardLogs);
+
+  // Modal closing
+  document.getElementById("close-modal")?.addEventListener("click", () => {
+    document.getElementById("artifact-modal").classList.remove("is-active");
+  });
+
   window.addEventListener("popstate", syncPageFromLocation);
 }
 
@@ -290,6 +325,24 @@ function readFormState(form, options = {}) {
           journal_mode: form.hematite_journal_mode.value,
         },
       },
+      profiling: (function () {
+        const perfEnabled = document.getElementById("run-worker-perf")?.checked;
+        const straceEnabled = document.getElementById("run-worker-strace")?.checked;
+        const perfOut = document.getElementById("run-perf-output")?.value || "";
+        const perfFreq = document.getElementById("run-perf-freq")?.value || "";
+        const perfGen = document.getElementById("run-perf-generate-flamegraph")?.checked;
+        const straceOut = document.getElementById("run-strace-output")?.value || "";
+        const anySet = perfEnabled || straceEnabled || perfOut !== "" || perfFreq !== "" || straceOut !== "";
+        if (!anySet) return null;
+        return {
+          worker_perf: perfEnabled ? true : null,
+          worker_perf_generate_flamegraph: perfGen === undefined ? null : perfGen,
+          worker_perf_freq_hz: perfFreq === "" ? null : Number(perfFreq),
+          worker_perf_output: perfOut === "" ? null : perfOut,
+          worker_strace: straceEnabled ? true : null,
+          worker_strace_output: straceOut === "" ? null : straceOut,
+        };
+      })(),
     },
     rampError: rampResult.error,
   };
@@ -625,6 +678,23 @@ function renderDashboardSummary() {
     [...(detail.warnings || run.summary?.warnings || [])],
     [...(detail.error_messages || run.summary?.error_messages || [])],
   );
+  const artifacts = detail?.summary?.artifact_paths || run.summary?.artifact_paths;
+  if (artifacts) {
+    const artifactContainer = document.getElementById("dashboard-artifacts");
+    artifactContainer.innerHTML = "";
+    
+    Object.entries(artifacts).forEach(([key, path]) => {
+      if (!path) return;
+      
+      if (key === "strace_paths" && Array.isArray(path)) {
+        path.forEach(p => renderArtifactCard(artifactContainer, run.run_id, p, "Strace Output"));
+      } else if (typeof path === "string") {
+        const label = key.replace("_path", "").replace("_", " ");
+        renderArtifactCard(artifactContainer, run.run_id, path, label);
+      }
+    });
+  }
+
   if (latestLog) {
     warnings.innerHTML += `
       <div class="warning-item">
@@ -633,6 +703,46 @@ function renderDashboardSummary() {
         <div>${escapeHtml(latestLog.message)}</div>
       </div>
     `;
+  }
+}
+
+function renderArtifactCard(container, runId, path, label) {
+  const fname = path.split("/").pop();
+  const card = document.createElement("div");
+  card.className = "artifact-card";
+  card.innerHTML = `
+    <div class="run-meta">${label}</div>
+    <strong>${escapeHtml(fname)}</strong>
+    <div class="button-row" style="margin-top: 10px;">
+      <button class="ghost small-btn" onclick="viewArtifact('${runId}', '${encodeURIComponent(fname)}', '${label}')">View Inline</button>
+      <a href="/api/runs/${runId}/artifact?name=${encodeURIComponent(fname)}" target="_blank" class="nav-item" style="padding: 4px 8px; font-size: 0.8rem;">Download</a>
+    </div>
+  `;
+  container.appendChild(card);
+}
+
+async function viewArtifact(runId, filename, label) {
+  const modal = document.getElementById("artifact-modal");
+  const content = document.getElementById("modal-content");
+  const title = document.getElementById("modal-title");
+  
+  title.textContent = `${label}: ${decodeURIComponent(filename)}`;
+  content.innerHTML = "<p>Loading artifact...</p>";
+  modal.classList.add("is-active");
+  
+  try {
+    const url = `/api/runs/${runId}/artifact?name=${filename}`;
+    if (filename.endsWith(".svg")) {
+      const res = await fetch(url);
+      const svg = await res.text();
+      content.innerHTML = svg;
+    } else {
+      const res = await fetch(url);
+      const text = await res.text();
+      content.innerHTML = `<pre style="width:100%; height:100%; padding:20px; background:#f8fafc; color:#1e293b; overflow:auto;">${escapeHtml(text)}</pre>`;
+    }
+  } catch (e) {
+    content.innerHTML = `<p class="error">Failed to load artifact: ${e.message}</p>`;
   }
 }
 
@@ -673,6 +783,45 @@ function renderHistorySummary() {
         <div class="run-meta">Storage: ${formatEngineSettings(effectiveConfig)}</div>
         <div class="run-meta">Final mix: ${formatMix(effectiveConfig?.load?.mix)}</div>
         ${latestLog ? `<div class="run-meta">Latest event: ${escapeHtml(latestLog.message)}</div>` : ""}
+        ${(() => {
+        try {
+          const ap = summary?.artifact_paths || detail?.summary?.artifact_paths;
+          if (!ap) return "";
+          const parts = [];
+          if (ap.flamegraph_path) {
+            const fn = ap.flamegraph_path.split("/").pop();
+            parts.push(`<a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank">Flamegraph</a>`);
+          }
+          if (ap.perf_data_path) {
+            const fn = ap.perf_data_path.split("/").pop();
+            parts.push(`<a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank">Perf data</a>`);
+          }
+          if (ap.strace_paths && ap.strace_paths.length) {
+            ap.strace_paths.forEach((p) => {
+              const fn = p.split("/").pop();
+              parts.push(`<a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank">strace: ${escapeHtml(fn)}</a>`);
+            });
+          }
+          if (parts.length) {
+            return `
+                <div class="panel inset-panel">
+                  <div class="section-head compact">
+                    <div>
+                      <p class="section-kicker">Artifacts</p>
+                      <h3>Run Artifacts</h3>
+                    </div>
+                  </div>
+                  <div class="artifact-list">${parts.join(" | ")}</div>
+                  ${ap.flamegraph_path ? `<div class="flamegraph-embed"><img src="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(ap.flamegraph_path.split("/").pop())}" alt="flamegraph" /></div>` : ""}
+                </div>
+              `;
+          }
+          return "";
+        } catch (e) {
+          console.warn("failed to render artifacts", e);
+          return "";
+        }
+      })()}
       </div>
     `;
   }).join("");
@@ -688,11 +837,36 @@ function renderDashboardLogs() {
   const container = document.getElementById("dashboard-logs");
   const detail = state.runDetails.get(state.activeRunId);
   const logs = detail?.logs || detail?.summary?.recent_logs || [];
+  
   if (!logs.length) {
-    container.innerHTML = '<div class="empty-state">No run events yet. Start a run to watch lifecycle, sample, and error messages here.</div>';
+    container.innerHTML = '<div class="empty-state">No run events yet.</div>';
     return;
   }
-  container.innerHTML = renderLogEntries(logs.slice(-60));
+
+  const searchTerm = document.getElementById("log-search-input")?.value.toLowerCase() || "";
+  const levelFilter = document.getElementById("log-level-filter")?.value || "all";
+
+  const filteredLogs = logs.filter(log => {
+    const matchesSearch = log.message.toLowerCase().includes(searchTerm);
+    const matchesLevel = levelFilter === "all" || log.level.toLowerCase() === levelFilter;
+    return matchesSearch && matchesLevel;
+  });
+
+  if (filteredLogs.length === 0) {
+    container.innerHTML = '<div class="empty-state">No logs match your filters.</div>';
+    return;
+  }
+
+  container.innerHTML = filteredLogs.slice(-200).map(log => `
+    <div class="log-line">
+      <span class="log-ts">${formatLogTimestamp(log.timestamp_ms)}</span>
+      <span class="log-lvl lvl-${log.level.toLowerCase()}">${log.level}</span>
+      <span class="log-msg">${escapeHtml(log.message)}</span>
+    </div>
+  `).join("");
+  
+  // Auto-scroll to bottom if at bottom
+  container.scrollTop = container.scrollHeight;
 }
 
 function renderHistoryCharts() {
@@ -1048,6 +1222,36 @@ function setupControls() {
       updates,
     });
   });
+  // Profiling controls: apply and dynamic enable/disable
+  const perfCheckbox = document.getElementById("worker-perf");
+  const perfFreq = document.getElementById("perf-freq");
+  const perfOutput = document.getElementById("perf-output");
+  const perfGenerate = document.getElementById("perf-generate-flamegraph");
+  const straceCheckbox = document.getElementById("worker-strace");
+  const straceOutput = document.getElementById("strace-output");
+
+  function syncProfilingControls() {
+    const perfEnabled = perfCheckbox.checked;
+    perfFreq.disabled = !perfEnabled;
+    perfOutput.disabled = !perfEnabled;
+    perfGenerate.disabled = !perfEnabled;
+    straceOutput.disabled = !straceCheckbox.checked;
+    renderSetupSummary();
+  }
+
+  perfCheckbox.addEventListener("change", syncProfilingControls);
+  straceCheckbox.addEventListener("change", syncProfilingControls);
+
+  document.getElementById("apply-profiling").addEventListener("click", async () => {
+    try {
+      await applyServerOptions();
+      alert("Profiling settings applied");
+      await loadServerOptions();
+      syncProfilingControls();
+    } catch (error) {
+      alert("Failed to apply profiling settings: " + (error.message || error));
+    }
+  });
 }
 
 function formatInteger(value) {
@@ -1095,7 +1299,8 @@ function syncConcurrencyControls(value) {
 }
 
 function statusPillClass(status) {
-  return `status-pill is-${status || "pending"}`;
+  const s = (status || "pending").toLowerCase();
+  return `status-badge status-${s}`;
 }
 
 function formatLogTimestamp(timestampMs) {
@@ -1145,10 +1350,48 @@ function formatMix(mix) {
   return `${mix.point_reads}/${mix.range_scans}/${mix.inserts}/${mix.updates}`;
 }
 
+async function loadServerOptions() {
+  try {
+    const opts = await fetchJson("/api/options");
+    document.getElementById("worker-perf").checked = !!opts.worker_perf;
+    document.getElementById("perf-output").value = opts.worker_perf_output || "";
+    document.getElementById("perf-freq").value = opts.worker_perf_freq_hz || "";
+    document.getElementById("perf-generate-flamegraph").checked = opts.worker_perf_generate_flamegraph !== false;
+    document.getElementById("worker-strace").checked = !!opts.worker_strace;
+    document.getElementById("strace-output").value = opts.worker_strace_output || "";
+  } catch (error) {
+    console.warn("failed to load server options", error);
+  }
+}
+
+async function applyServerOptions() {
+  const payload = {
+    worker_perf: document.getElementById("worker-perf").checked,
+    worker_perf_generate_flamegraph: document.getElementById("perf-generate-flamegraph").checked,
+    worker_perf_freq_hz: (function () {
+      const v = document.getElementById("perf-freq").value;
+      return v === "" ? null : Number(v);
+    })(),
+    worker_perf_output: document.getElementById("perf-output").value || null,
+    worker_strace: document.getElementById("worker-strace").checked,
+    worker_strace_output: document.getElementById("strace-output").value || null,
+  };
+  const resp = await fetch("/api/options", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => resp.statusText);
+    throw new Error(text || resp.statusText);
+  }
+}
+
 async function boot() {
   setupNavigation();
   setupForm();
   setupControls();
+  await loadServerOptions();
   setupDurationControls();
   syncPageFromLocation();
   syncEngineSettingPanels(document.getElementById("run-form").engine.value);

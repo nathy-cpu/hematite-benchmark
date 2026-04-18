@@ -377,6 +377,7 @@ mod tests {
             ramp_schedule: vec![],
             storage: StorageConfig::default(),
             durability: None,
+            profiling: None,
         }
     }
 

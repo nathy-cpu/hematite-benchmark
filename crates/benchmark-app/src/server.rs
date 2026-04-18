@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -11,6 +11,7 @@ use benchmark_core::{
     RunSummary, WorkerEvent,
 };
 use futures::{Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path as FsPath, PathBuf};
@@ -24,6 +25,29 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerOptions {
+    pub worker_perf: bool,
+    pub worker_perf_generate_flamegraph: bool,
+    pub worker_perf_freq_hz: Option<u32>,
+    pub worker_perf_output: Option<String>,
+    pub worker_strace: bool,
+    pub worker_strace_output: Option<String>,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        Self {
+            worker_perf: false,
+            worker_perf_generate_flamegraph: true,
+            worker_perf_freq_hz: None,
+            worker_perf_output: None,
+            worker_strace: false,
+            worker_strace_output: None,
+        }
+    }
+}
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const APP_JS: &str = include_str!("../static/app.js");
 const STYLES_CSS: &str = include_str!("../static/styles.css");
@@ -58,6 +82,7 @@ impl Default for ServerVerbosity {
 struct AppState {
     runs_dir: PathBuf,
     runs: Arc<RwLock<HashMap<String, StoredRun>>>,
+    options: Arc<RwLock<ServerOptions>>,
 }
 
 struct StoredRun {
@@ -89,10 +114,13 @@ struct SpawnedWorker {
 }
 
 pub async fn run_server() -> Result<()> {
-    run_server_with_verbosity(ServerVerbosity::default()).await
+    run_server_with_verbosity(ServerVerbosity::default(), ServerOptions::default()).await
 }
 
-pub async fn run_server_with_verbosity(verbosity: ServerVerbosity) -> Result<()> {
+pub async fn run_server_with_verbosity(
+    verbosity: ServerVerbosity,
+    options: ServerOptions,
+) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -105,6 +133,7 @@ pub async fn run_server_with_verbosity(verbosity: ServerVerbosity) -> Result<()>
     let state = AppState {
         runs_dir: runs_dir.clone(),
         runs: Arc::new(RwLock::new(load_existing_runs(&runs_dir).await?)),
+        options: Arc::new(RwLock::new(options)),
     };
 
     let app = Router::new()
@@ -115,9 +144,11 @@ pub async fn run_server_with_verbosity(verbosity: ServerVerbosity) -> Result<()>
         .route("/app.js", get(app_js))
         .route("/styles.css", get(styles_css))
         .route("/api/runs", get(list_runs).post(start_run))
+        .route("/api/options", get(get_options).post(set_options))
         .route("/api/runs/{run_id}", get(get_run))
         .route("/api/runs/{run_id}/control", post(control_run))
         .route("/api/runs/{run_id}/stream", get(stream_run))
+        .route("/api/runs/{run_id}/artifact", get(get_artifact))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 3000)).await?;
@@ -159,6 +190,53 @@ async fn list_runs(State(state): State<AppState>) -> Json<Vec<RunListItem>> {
         .collect::<Vec<_>>();
     items.sort_by(|left, right| right.started_at_ms.cmp(&left.started_at_ms));
     Json(items)
+}
+
+async fn get_options(State(state): State<AppState>) -> Json<ServerOptions> {
+    let opts = state.options.read().await.clone();
+    Json(opts)
+}
+
+async fn set_options(
+    State(state): State<AppState>,
+    Json(new_opts): Json<ServerOptions>,
+) -> Result<StatusCode, ApiError> {
+    *state.options.write().await = new_opts;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn get_artifact(
+    Path(run_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let name = params
+        .get("name")
+        .ok_or_else(|| ApiError::bad_request("missing name parameter"))?;
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(ApiError::bad_request("invalid artifact name"));
+    }
+    let run_dir = {
+        let runs = state.runs.read().await;
+        let run = runs
+            .get(&run_id)
+            .ok_or_else(|| ApiError::not_found("run not found"))?;
+        run.run_dir.clone()
+    };
+    let path = run_dir.join(name);
+    if !path.exists() {
+        return Err(ApiError::not_found("artifact not found"));
+    }
+    let bytes = fs::read(&path).await?;
+    let content_type = match path.extension().and_then(|s| s.to_str()) {
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json",
+        Some("txt") | Some("log") | Some("out") => "text/plain",
+        Some("perf") | Some("data") => "application/octet-stream",
+        Some("gz") => "application/gzip",
+        _ => "application/octet-stream",
+    };
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response())
 }
 
 async fn get_run(
@@ -247,7 +325,8 @@ async fn start_run(
     )
     .await?;
 
-    let spawned = match spawn_worker_process(&run_id, &run_dir, &config_path).await {
+    let opts = state.options.read().await.clone();
+    let spawned = match spawn_worker_process(&run_id, &run_dir, &config_path, opts, &config).await {
         Ok(child) => child,
         Err(error) => {
             state.runs.write().await.remove(&run_id);
@@ -375,131 +454,375 @@ async fn register_worker(
 
     let stdout_state = state.clone();
     let stdout_run_id = run_id.clone();
-    let stdout_tx = tx.clone();
-    tokio::spawn(async move {
-        let file = OpenOptions::new()
+    let _stdout_tx = tx.clone();
+    let _stdout_task = tokio::spawn(async move {
+        let mut file = match OpenOptions::new()
             .create(true)
             .append(true)
             .open(&metrics_path)
-            .await;
-        let mut file = match file {
+            .await
+        {
             Ok(file) => file,
             Err(error) => {
                 error!(?error, "failed to open metrics file");
                 return;
             }
         };
-        let control_events_file = OpenOptions::new()
+        let mut control_events_file = match OpenOptions::new()
             .create(true)
             .append(true)
             .open(&control_events_path)
-            .await;
-        let mut control_events_file = match control_events_file {
+            .await
+        {
             Ok(file) => file,
             Err(error) => {
                 error!(?error, "failed to open control events file");
                 return;
             }
         };
+        // Handle stdout
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            match serde_json::from_str::<WorkerEvent>(&line) {
-                Ok(event) => {
-                    if let Err(error) = handle_worker_event(
-                        &stdout_state,
-                        &stdout_run_id,
-                        &summary_path,
-                        &mut file,
-                        &mut control_events_file,
-                        event.clone(),
-                    )
-                    .await
-                    {
-                        error!(?error, "failed to handle worker event");
-                    }
-                    if !matches!(event, WorkerEvent::Log { .. }) {
-                        let _ = stdout_tx.send(event);
-                    }
-                }
-                Err(_) => {
-                    if !line.trim().is_empty() {
-                        warn!("ignoring non-json worker line: {line}");
-                    }
-                }
+            if let Ok(event) = serde_json::from_str::<WorkerEvent>(&line) {
+                let _ = handle_worker_event(&stdout_state, &stdout_run_id, &summary_path, &mut file, &mut control_events_file, event).await;
             }
         }
     });
 
+    // Spawn stderr handler
     let stderr_state = state.clone();
     let stderr_run_id = run_id.clone();
-    tokio::spawn(async move {
+    let _stderr_tx = tx.clone();
+    let _stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            if !line.trim().is_empty() {
-                warn!("worker stderr: {line}");
-                if let Err(error) = record_run_log(
-                    &stderr_state,
-                    &stderr_run_id,
-                    RunLogEntry {
-                        timestamp_ms: now_ms(),
-                        level: RunLogLevel::Warn,
-                        source: RunLogSource::WorkerStderr,
-                        message: line.clone(),
-                    },
-                )
-                .await
-                {
-                    error!(?error, "failed to record worker stderr log");
-                }
-            }
+            let _ = record_run_log(&stderr_state, &stderr_run_id, RunLogEntry {
+                timestamp_ms: now_ms(),
+                level: RunLogLevel::Info,
+                source: RunLogSource::WorkerStderr,
+                message: line,
+            }).await;
         }
     });
 
-    let wait_state = state.clone();
-    let wait_run_id = run_id.clone();
-    tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) if !status.success() => {
-                let message = format!("worker exited with status {status}");
-                if let Err(error) = record_run_log(
-                    &wait_state,
-                    &wait_run_id,
-                    RunLogEntry {
-                        timestamp_ms: now_ms(),
-                        level: RunLogLevel::Error,
-                        source: RunLogSource::Server,
-                        message: message.clone(),
-                    },
-                )
-                .await
-                {
-                    error!(?error, "failed to record worker exit log");
-                }
-                if let Err(error) = finalize_failed_run(&wait_state, &wait_run_id, message).await {
-                    error!(?error, "failed to finalize failed run");
+    // Spawn post-run processing
+    let post_state = state.clone();
+    let post_run_id = run_id.clone();
+    let post_run_dir = run_dir.clone();
+    let _post_task = tokio::spawn(async move {
+        let _ = child.wait().await;
+
+        // Post-run: scan the run directory for perf data files (and process each).
+        // Prefer the spawn-options.json file (written at spawn time) for per-run decisions;
+        // fall back to server options where applicable.
+        let spawn_opts_path = post_run_dir.join("spawn-options.json");
+        let spawn_opts: Option<ServerOptions> = match fs::read(&spawn_opts_path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+            Err(_) => None,
+        };
+
+        let server_opts = post_state.options.read().await.clone();
+
+        // Collect candidate perf files in the run dir.
+        let mut perf_files: Vec<PathBuf> = Vec::new();
+        if let Ok(mut dir) = fs::read_dir(&post_run_dir).await {
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name == "perf.data" || (name.ends_with(".data") && name.contains("perf")) {
+                        perf_files.push(entry.path());
+                    }
                 }
             }
-            Ok(_) => {}
-            Err(error) => {
-                error!(?error, "failed to wait for worker");
-                if let Err(log_error) = record_run_log(
-                    &wait_state,
-                    &wait_run_id,
+        }
+
+        // Also consider configured output paths from spawn or server options.
+        if let Some(ref so) = spawn_opts {
+            if so.worker_perf {
+                if let Some(ref p) = so.worker_perf_output {
+                    let ppath = if std::path::Path::new(p).is_absolute() {
+                        std::path::PathBuf::from(p)
+                    } else {
+                        post_run_dir.join(p)
+                    };
+                    if ppath.exists() {
+                        perf_files.push(ppath);
+                    }
+                }
+            }
+        } else if server_opts.worker_perf {
+            if let Some(ref p) = server_opts.worker_perf_output {
+                let ppath = if std::path::Path::new(p).is_absolute() {
+                    std::path::PathBuf::from(p)
+                } else {
+                    post_run_dir.join(p)
+                };
+                if ppath.exists() {
+                    perf_files.push(ppath);
+                }
+            }
+        }
+
+        // Deduplicate
+        perf_files.sort();
+        perf_files.dedup();
+
+        if !perf_files.is_empty() {
+            for perf_path in perf_files {
+                let _ = record_run_log(
+                    &post_state,
+                    &post_run_id,
                     RunLogEntry {
                         timestamp_ms: now_ms(),
-                        level: RunLogLevel::Error,
+                        level: RunLogLevel::Info,
                         source: RunLogSource::Server,
-                        message: format!("failed to wait for worker: {error}"),
+                        message: format!("found perf data at {}", perf_path.display()),
                     },
                 )
-                .await
-                {
-                    error!(?log_error, "failed to record wait error log");
+                .await;
+
+                // Decide whether to generate flamegraph: spawn_opts has priority, then server opts.
+                let mut generate = server_opts.worker_perf_generate_flamegraph;
+                if let Some(ref so) = spawn_opts {
+                    generate = so.worker_perf_generate_flamegraph;
                 }
-                if let Err(finalize_error) =
-                    finalize_failed_run(&wait_state, &wait_run_id, error.to_string()).await
-                {
-                    error!(?finalize_error, "failed to persist wait error");
+
+                if generate {
+                    // Run `perf script -i <perf.data>` and attempt to run stackcollapse+flamegraph.
+                    match Command::new("perf")
+                        .args(["script", "-i", perf_path.to_str().unwrap()])
+                        .output()
+                        .await
+                    {
+                        Ok(perf_script_out) if perf_script_out.status.success() => {
+                            let stem = perf_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("perf");
+                            let folded_path = post_run_dir.join(format!("{}.folded", stem));
+                            let flame_path = post_run_dir.join(format!("{}-flamegraph.svg", stem));
+
+                            match Command::new("stackcollapse-perf.pl")
+                                .stdin(Stdio::piped())
+                                .stdout(Stdio::piped())
+                                .spawn()
+                            {
+                                Ok(mut proc) => {
+                                    if let Some(mut stdin) = proc.stdin.take() {
+                                        let _ = stdin.write_all(&perf_script_out.stdout).await;
+                                    }
+                                    match proc.wait_with_output().await {
+                                        Ok(collapse_out) if collapse_out.status.success() => {
+                                            match Command::new("flamegraph.pl")
+                                                .stdin(Stdio::piped())
+                                                .stdout(Stdio::piped())
+                                                .spawn()
+                                            {
+                                                Ok(mut flame_proc) => {
+                                                    if let Some(mut flame_stdin) =
+                                                        flame_proc.stdin.take()
+                                                    {
+                                                        let _ = flame_stdin
+                                                            .write_all(&collapse_out.stdout)
+                                                            .await;
+                                                    }
+                                                    match flame_proc.wait_with_output().await {
+                                                        Ok(flame_out)
+                                                            if flame_out.status.success() =>
+                                                        {
+                                                            let _ = fs::write(
+                                                                &flame_path,
+                                                                &flame_out.stdout,
+                                                            )
+                                                            .await;
+                                                            let _ = record_run_log(
+                                                                &post_state,
+                                                                &post_run_id,
+                                                                RunLogEntry {
+                                                                    timestamp_ms: now_ms(),
+                                                                    level: RunLogLevel::Info,
+                                                                    source: RunLogSource::Server,
+                                                                    message: format!(
+                                                                        "flamegraph generated: {}",
+                                                                        flame_path.display()
+                                                                    ),
+                                                                },
+                                                            )
+                                                            .await;
+                                                        }
+                                                        _ => {
+                                                            let _ = fs::write(&folded_path, &collapse_out.stdout).await;
+                                                            let perf_script_path = post_run_dir.join(format!("{}.script", stem));
+                                                            let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                                            let _ = record_run_log(
+                                                                &post_state,
+                                                                &post_run_id,
+                                                                RunLogEntry {
+                                                                    timestamp_ms: now_ms(),
+                                                                    level: RunLogLevel::Warn,
+                                                                    source: RunLogSource::Server,
+                                                                    message: format!("flamegraph.pl not available; saved folded perf data at {}", folded_path.display()),
+                                                                },
+                                                            )
+                                                            .await;
+                                                        }
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    let perf_script_path = post_run_dir.join(format!("{}.script", stem));
+                                                    let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                                    let _ = record_run_log(
+                                                        &post_state,
+                                                        &post_run_id,
+                                                        RunLogEntry {
+                                                            timestamp_ms: now_ms(),
+                                                            level: RunLogLevel::Warn,
+                                                            source: RunLogSource::Server,
+                                                            message: format!("flamegraph.pl not available; wrote perf.script to {}", perf_script_path.display()),
+                                                        },
+                                                    )
+                                                    .await;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            let perf_script_path = post_run_dir.join(format!("{}.script", stem));
+                                            let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                            let _ = record_run_log(
+                                                &post_state,
+                                                &post_run_id,
+                                                RunLogEntry {
+                                                    timestamp_ms: now_ms(),
+                                                    level: RunLogLevel::Warn,
+                                                    source: RunLogSource::Server,
+                                                    message: format!("stackcollapse-perf.pl failed; wrote perf.script to {}", perf_script_path.display()),
+                                                },
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    let perf_script_path = post_run_dir.join(format!("{}.script", stem));
+                                    let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                    let _ = record_run_log(
+                                        &post_state,
+                                        &post_run_id,
+                                        RunLogEntry {
+                                            timestamp_ms: now_ms(),
+                                            level: RunLogLevel::Warn,
+                                            source: RunLogSource::Server,
+                                            message: format!("stackcollapse-perf.pl not available; wrote perf.script to {}", perf_script_path.display()),
+                                        },
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                        _ => {
+                            let _ = record_run_log(
+                                &post_state,
+                                &post_run_id,
+                                RunLogEntry {
+                                    timestamp_ms: now_ms(),
+                                    level: RunLogLevel::Warn,
+                                    source: RunLogSource::Server,
+                                    message: format!("failed to run `perf script` on {}; leaving perf data in run dir", perf_path.display()),
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                } else {
+                    let _ = record_run_log(
+                        &post_state,
+                        &post_run_id,
+                        RunLogEntry {
+                            timestamp_ms: now_ms(),
+                            level: RunLogLevel::Info,
+                            source: RunLogSource::Server,
+                            message: format!("perf data present at {} but flamegraph generation is disabled", perf_path.display()),
+                        },
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // Strace: list any strace.* files written into the run directory and report them
+        match fs::read_dir(&post_run_dir).await {
+            Ok(mut dir) => {
+                let mut found = Vec::new();
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if name.starts_with("strace") {
+                            found.push(entry.path());
+                        }
+                    }
+                }
+                if !found.is_empty() {
+                    let paths = found
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = record_run_log(
+                        &post_state,
+                        &post_run_id,
+                        RunLogEntry {
+                            timestamp_ms: now_ms(),
+                            level: RunLogLevel::Info,
+                            source: RunLogSource::Server,
+                            message: format!("strace outputs: {}", paths),
+                        },
+                    )
+                    .await;
+                }
+            }
+            Err(e) => {
+                error!(?e, "failed to scan run dir for strace outputs");
+            }
+        }
+
+        // Update saved summary to include any artifacts produced after the run (perf data, flamegraph, strace)
+        let summary_path = post_run_dir.join("summary.json");
+        if summary_path.exists() {
+            match fs::read(&summary_path).await {
+                Ok(bytes) => {
+                    if let Ok(mut existing_summary) = serde_json::from_slice::<RunSummary>(&bytes) {
+                        existing_summary.artifact_paths = artifact_paths(&post_run_dir);
+                        match serde_json::to_vec_pretty(&existing_summary) {
+                            Ok(serialized) => {
+                                if let Err(e) = fs::write(&summary_path, &serialized).await {
+                                    error!(
+                                        ?e,
+                                        "failed to write updated summary.json with artifacts"
+                                    );
+                                } else {
+                                    let _ = record_run_log(
+                                        &post_state,
+                                        &post_run_id,
+                                        RunLogEntry {
+                                            timestamp_ms: now_ms(),
+                                            level: RunLogLevel::Info,
+                                            source: RunLogSource::Server,
+                                            message: format!("updated summary artifact paths"),
+                                        },
+                                    )
+                                    .await;
+                                    let mut runs = post_state.runs.write().await;
+                                    if let Some(run) = runs.get_mut(&post_run_id) {
+                                        run.summary = Some(existing_summary.clone());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(?e, "failed to serialize updated summary.json");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(?e, "failed to read summary.json for artifact update");
                 }
             }
         }
@@ -689,41 +1012,123 @@ async fn spawn_worker_process(
     run_id: &str,
     run_dir: &FsPath,
     config_path: &FsPath,
+    options: ServerOptions,
+    config: &BenchmarkConfig,
 ) -> Result<SpawnedWorker, ApiError> {
     let current_exe = std::env::current_exe()?;
     let worker_binary = current_exe.with_file_name(worker_binary_name());
 
-    let (launcher, mut command) = if should_reuse_worker_binary(&current_exe, &worker_binary) {
-        ("worker binary", Command::new(worker_binary))
+    // Build the invocation vector (program + args).
+    let mut invocation: Vec<String> = Vec::new();
+    let reuse_binary = should_reuse_worker_binary(&current_exe, &worker_binary);
+    if reuse_binary {
+        invocation.push(worker_binary.display().to_string());
     } else {
-        if worker_binary.exists() {
-            info!(
-                "worker binary is older than the running server binary; spawning via cargo to avoid config/schema drift"
-            );
-        }
-        let mut command = Command::new("cargo");
-        command.args([
-            "run",
-            "--quiet",
-            "-p",
-            "benchmark-app",
-            "--bin",
-            "benchmark-worker",
-            "--",
-        ]);
-        ("cargo run", command)
-    };
+        invocation.push("cargo".to_string());
+        invocation.push("run".to_string());
+        invocation.push("--quiet".to_string());
+        invocation.push("-p".to_string());
+        invocation.push("benchmark-app".to_string());
+        invocation.push("--bin".to_string());
+        invocation.push("benchmark-worker".to_string());
+        invocation.push("--".to_string());
+    }
 
-    command
-        .arg("--run-id")
-        .arg(run_id)
-        .arg("--run-dir")
-        .arg(run_dir)
-        .arg("--config")
-        .arg(config_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    invocation.push("--run-id".to_string());
+    invocation.push(run_id.to_string());
+    invocation.push("--run-dir".to_string());
+    invocation.push(run_dir.display().to_string());
+    invocation.push("--config".to_string());
+    invocation.push(config_path.display().to_string());
+
+    // Merge server-level options with per-run profiling fields (if any)
+    let mut effective = options.clone();
+    if let Some(prof) = &config.profiling {
+        if let Some(val) = prof.worker_perf {
+            effective.worker_perf = val;
+        }
+        if let Some(val) = prof.worker_perf_generate_flamegraph {
+            effective.worker_perf_generate_flamegraph = val;
+        }
+        if let Some(val) = prof.worker_perf_freq_hz {
+            effective.worker_perf_freq_hz = Some(val);
+        }
+        if let Some(val) = prof.worker_perf_output.clone() {
+            effective.worker_perf_output = Some(val);
+        }
+        if let Some(val) = prof.worker_strace {
+            effective.worker_strace = val;
+        }
+        if let Some(val) = prof.worker_strace_output.clone() {
+            effective.worker_strace_output = Some(val);
+        }
+    }
+
+    // Persist the effective spawn options into the run directory so post-run tasks can
+    // discover what runner options were used (especially when per-run profiling is set).
+    let spawn_opts_path = run_dir.join("spawn-options.json");
+    if let Ok(serialized) = serde_json::to_vec_pretty(&effective) {
+        let _ = fs::write(&spawn_opts_path, &serialized).await;
+    }
+
+    // Decide whether to wrap invocation with perf or strace
+    let (launcher, mut command) = if effective.worker_perf {
+        // normalize perf output path: relative -> inside run_dir
+        let perf_out = effective
+            .worker_perf_output
+            .clone()
+            .unwrap_or_else(|| "perf.data".to_string());
+        let perf_out_path = if std::path::Path::new(&perf_out).is_absolute() {
+            std::path::PathBuf::from(perf_out)
+        } else {
+            run_dir.join(perf_out)
+        };
+        let perf_out_str = perf_out_path.display().to_string();
+        let freq = effective
+            .worker_perf_freq_hz
+            .map(|hz| hz.to_string())
+            .unwrap_or_else(|| "99".to_string());
+        let mut cmd = Command::new("perf");
+        cmd.args(["record", "-F", &freq, "-g", "-o", &perf_out_str, "--"]);
+        cmd.args(invocation.iter());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        ("perf record", cmd)
+    } else if effective.worker_strace {
+        let strace_prefix = effective
+            .worker_strace_output
+            .clone()
+            .unwrap_or_else(|| "strace".to_string());
+        let strace_path = if std::path::Path::new(&strace_prefix).is_absolute() {
+            std::path::PathBuf::from(strace_prefix)
+        } else {
+            run_dir.join(strace_prefix)
+        };
+        let strace_prefix_str = strace_path.display().to_string();
+        let mut cmd = Command::new("strace");
+        cmd.args(["-ff", "-tt", "-o", &strace_prefix_str, "-s", "200", "--"]);
+        cmd.args(invocation.iter());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        ("strace", cmd)
+    } else {
+        // direct invocation
+        let program = &invocation[0];
+        let mut cmd = Command::new(program);
+        if invocation.len() > 1 {
+            cmd.args(&invocation[1..]);
+        }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if reuse_binary {
+            ("worker binary", cmd)
+        } else {
+            ("cargo run", cmd)
+        }
+    };
 
     let child = command.spawn().map_err(ApiError::from)?;
     Ok(SpawnedWorker { child, launcher })
@@ -954,6 +1359,20 @@ fn summarize_samples(samples: &[MetricSample]) -> RunAggregate {
 }
 
 fn artifact_paths(run_dir: &FsPath) -> ArtifactPaths {
+    let perf_data = run_dir.join("perf.data");
+    let flame = run_dir.join("perf-flamegraph.svg");
+    // collect any strace files
+    let mut strace_paths = Vec::new();
+    if let Ok(iter) = std::fs::read_dir(run_dir) {
+        for entry in iter.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("strace") {
+                    strace_paths.push(entry.path().display().to_string());
+                }
+            }
+        }
+    }
+
     ArtifactPaths {
         config_path: run_dir.join("config.json").display().to_string(),
         metrics_path: run_dir.join("metrics.jsonl").display().to_string(),
@@ -961,6 +1380,17 @@ fn artifact_paths(run_dir: &FsPath) -> ArtifactPaths {
         control_events_path: run_dir.join("control-events.jsonl").display().to_string(),
         data_dir: run_dir.join("data").display().to_string(),
         logs_path: run_dir.join("logs.jsonl").display().to_string(),
+        perf_data_path: if perf_data.exists() {
+            Some(perf_data.display().to_string())
+        } else {
+            None
+        },
+        flamegraph_path: if flame.exists() {
+            Some(flame.display().to_string())
+        } else {
+            None
+        },
+        strace_paths,
     }
 }
 

@@ -741,6 +741,9 @@ fn artifact_paths(run_dir: &Path, data_dir: &Path) -> ArtifactPaths {
         control_events_path: run_dir.join("control-events.jsonl").display().to_string(),
         data_dir: data_dir.display().to_string(),
         logs_path: run_dir.join("logs.jsonl").display().to_string(),
+        perf_data_path: None,
+        flamegraph_path: None,
+        strace_paths: Vec::new(),
     }
 }
 
@@ -810,6 +813,7 @@ mod tests {
             ramp_schedule: vec![],
             storage: StorageConfig::default(),
             durability: None,
+            profiling: None,
         }
     }
 

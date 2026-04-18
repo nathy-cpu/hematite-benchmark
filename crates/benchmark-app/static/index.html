@@ -1,421 +1,377 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Hematite Benchmark Dashboard</title>
-    <link rel="stylesheet" href="/styles.css" />
-  </head>
-  <body>
-    <div class="shell">
-      <header class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Embedded Database Stress Lab</p>
-          <h1>Hematite vs SQLite</h1>
-          <p class="lede">
-            Configure runs before launch, watch live behavior while they execute, and compare saved sessions with clearer charts and summaries.
-          </p>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hematite Benchmark | Stress Lab</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon">H</div>
+          <span class="brand-name">Hematite Lab</span>
         </div>
-        <div class="hero-card">
-          <div><span>Server</span><strong id="server-status">Ready</strong></div>
-          <div><span>Total runs</span><strong id="run-count">0</strong></div>
-          <div><span>Active runs</span><strong id="active-run-count">0</strong></div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="/setup" class="nav-item is-active" data-page-link="setup">
+          <span>Setup</span>
+        </a>
+        <a href="/dashboard" class="nav-item" data-page-link="dashboard">
+          <span>Monitor</span>
+        </a>
+        <a href="/history" class="nav-item" data-page-link="history">
+          <span>History</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="mini-metric">
+          <span>Server Status</span>
+          <strong id="server-status">Ready</strong>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <header class="top-bar">
+        <div class="page-title">
+          <h1 id="current-page-title">Run Setup</h1>
+        </div>
+        <div class="server-metrics">
+          <div class="mini-metric">
+            <span>Total Runs</span>
+            <strong id="run-count">0</strong>
+          </div>
+          <div class="mini-metric">
+            <span>Active</span>
+            <strong id="active-run-count">0</strong>
+          </div>
         </div>
       </header>
 
-      <nav class="page-nav" aria-label="Primary">
-        <a href="/setup" data-page-link="setup">Setup</a>
-        <a href="/dashboard" data-page-link="dashboard">Dashboard</a>
-        <a href="/history" data-page-link="history">History</a>
-      </nav>
+      <!-- Setup Page -->
+      <section id="page-setup" class="page is-active">
+        <div class="dashboard-grid">
+          <div class="panel span-8">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Configurator</p>
+                <h2>New Benchmark Run</h2>
+              </div>
+            </div>
 
-      <main>
-        <section id="page-setup" class="page">
-          <div class="page-grid setup-grid">
-            <section class="panel">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">Before You Run</p>
-                  <h2>Initial Setup</h2>
+            <form id="run-form" class="form-section">
+              <div class="grid two">
+                <div class="field">
+                  <label>Run Name</label>
+                  <input name="run_name" value="baseline" required />
                 </div>
-                <p class="hint">This page is for choosing the workload, dataset shape, and how long the run should last.</p>
+                <div class="field">
+                  <label>Database Engine</label>
+                  <select name="engine">
+                    <option value="hematite">Hematite</option>
+                    <option value="sqlite">SQLite</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Test Profile</label>
+                  <select name="test_profile" id="test-profile">
+                    <option value="quick">Quick check</option>
+                    <option value="benchmark">Benchmark run</option>
+                    <option value="stability">Stability soak</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
               </div>
 
-              <form id="run-form">
-                <div class="grid two">
-                  <label>
-                    <span>Run name</span>
-                    <input name="run_name" value="baseline" required />
-                  </label>
-                  <label>
-                    <span>Engine</span>
-                    <select name="engine">
-                      <option value="hematite">Hematite</option>
-                      <option value="sqlite">SQLite</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Run profile</span>
-                    <select name="test_profile" id="test-profile">
-                      <option value="quick">Quick check</option>
-                      <option value="benchmark">Benchmark run</option>
-                      <option value="stability">Stability soak</option>
-                      <option value="custom">Custom</option>
-                    </select>
-                  </label>
-                </div>
-
-                <div class="panel inset-panel">
-                  <div class="section-head compact">
-                    <div>
-                      <p class="section-kicker">Engine Settings</p>
-                      <h3>Storage Behavior</h3>
-                    </div>
-                    <p class="hint">
-                      These are the exact database settings the benchmark will apply for the selected engine.
-                    </p>
-                  </div>
-
-                  <div id="sqlite-settings-panel" data-engine-panel="sqlite">
-                    <div class="grid two">
-                      <label>
-                        <span>SQLite journal mode</span>
-                        <select name="sqlite_journal_mode">
-                          <option value="wal">WAL</option>
-                          <option value="delete">DELETE</option>
-                          <option value="truncate">TRUNCATE</option>
-                          <option value="persist">PERSIST</option>
-                          <option value="memory">MEMORY</option>
-                          <option value="off">OFF</option>
-                        </select>
-                      </label>
-                      <label>
-                        <span>SQLite synchronous</span>
-                        <select name="sqlite_synchronous">
-                          <option value="normal">NORMAL</option>
-                          <option value="full">FULL</option>
-                          <option value="extra">EXTRA</option>
-                          <option value="off">OFF</option>
-                        </select>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div id="hematite-settings-panel" data-engine-panel="hematite" hidden>
-                    <div class="grid two">
-                      <label>
-                        <span>Hematite journal mode</span>
-                        <select name="hematite_journal_mode">
-                          <option value="wal">WAL</option>
-                          <option value="rollback">ROLLBACK</option>
-                        </select>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="panel inset-panel">
-                  <div class="section-head compact">
-                    <div>
-                      <p class="section-kicker">Run Length</p>
-                      <h3>Duration Settings</h3>
-                    </div>
-                    <p class="hint" id="duration-help">
-                      Stability runs are meant for longer observation windows, not just peak throughput snapshots.
-                    </p>
-                  </div>
-                  <div class="grid three">
-                    <label>
-                      <span>Duration value</span>
-                      <input type="number" min="1" name="duration_value" value="30" />
-                    </label>
-                    <label>
-                      <span>Duration unit</span>
-                      <select name="duration_unit" id="duration-unit">
-                        <option value="seconds">Seconds</option>
-                        <option value="minutes">Minutes</option>
-                        <option value="hours">Hours</option>
+              <div class="panel inset-panel">
+                <h3>Storage Settings</h3>
+                <div id="sqlite-settings-panel" data-engine-panel="sqlite">
+                  <div class="grid two">
+                    <div class="field">
+                      <label>Journal Mode</label>
+                      <select name="sqlite_journal_mode">
+                        <option value="wal">WAL</option>
+                        <option value="delete">DELETE</option>
+                        <option value="truncate">TRUNCATE</option>
+                        <option value="persist">PERSIST</option>
+                        <option value="memory">MEMORY</option>
+                        <option value="off">OFF</option>
                       </select>
-                    </label>
-                    <div class="duration-preview">
-                      <span>Run time preview</span>
-                      <strong id="duration-preview">30 seconds</strong>
+                    </div>
+                    <div class="field">
+                      <label>Synchronous</label>
+                      <select name="sqlite_synchronous">
+                        <option value="normal">NORMAL</option>
+                        <option value="full">FULL</option>
+                        <option value="extra">EXTRA</option>
+                        <option value="off">OFF</option>
+                      </select>
                     </div>
                   </div>
-                  <div class="preset-row">
-                    <button type="button" class="ghost" data-duration-preset="quick">30 sec quick check</button>
-                    <button type="button" class="ghost" data-duration-preset="benchmark">5 min benchmark</button>
-                    <button type="button" class="ghost" data-duration-preset="stability">30 min stability</button>
-                  </div>
                 </div>
 
+                <div id="hematite-settings-panel" data-engine-panel="hematite" hidden>
+                  <div class="grid two">
+                    <div class="field">
+                      <label>Journal Mode</label>
+                      <select name="hematite_journal_mode">
+                        <option value="wal">WAL</option>
+                        <option value="rollback">ROLLBACK</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel inset-panel">
+                <h3>Duration & Workload</h3>
                 <div class="grid three">
-                  <label>
-                    <span>Initial rows</span>
-                    <input type="number" min="1" name="initial_rows" value="5000" />
-                  </label>
-                  <label>
-                    <span>Payload size</span>
-                    <input type="number" min="1" name="payload_size_bytes" value="256" />
-                  </label>
-                  <label>
-                    <span>Categories</span>
-                    <input type="number" min="1" name="category_count" value="32" />
-                  </label>
-                  <label>
-                    <span>Range scan size</span>
-                    <input type="number" min="1" name="range_scan_size" value="25" />
-                  </label>
-                  <label>
-                    <span>Concurrency</span>
-                    <input type="number" min="1" name="concurrency" value="4" />
-                  </label>
-                  <label>
-                    <span>Batch size</span>
-                    <input type="number" min="1" name="batch_size" value="1" />
-                  </label>
-                  <label>
-                    <span>Sample interval (ms)</span>
-                    <input type="number" min="100" step="100" name="sample_interval_ms" value="1000" />
-                  </label>
-                </div>
-
-                <div class="mix-grid">
-                  <label><span>Point reads %</span><input type="number" min="0" max="100" name="point_reads" value="50" /></label>
-                  <label><span>Range scans %</span><input type="number" min="0" max="100" name="range_scans" value="10" /></label>
-                  <label><span>Inserts %</span><input type="number" min="0" max="100" name="inserts" value="20" /></label>
-                  <label><span>Updates %</span><input type="number" min="0" max="100" name="updates" value="20" /></label>
-                </div>
-
-                <label>
-                  <span>Ramp schedule JSON</span>
-                  <textarea name="ramp_schedule" rows="4">[]</textarea>
-                </label>
-
-                <div class="button-row">
-                  <button type="submit">Start Run</button>
-                  <button type="button" class="ghost" id="jump-to-dashboard">Open Dashboard</button>
-                </div>
-              </form>
-            </section>
-
-            <section class="panel">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">What This Means</p>
-                  <h2>Setup Summary</h2>
-                </div>
-              </div>
-              <div id="setup-summary" class="summary-list"></div>
-              <div id="setup-validation" class="warning-list"></div>
-
-              <div class="panel inset-panel">
-                <div class="section-head compact">
-                  <div>
-                    <p class="section-kicker">Recent Activity</p>
-                    <h3>Latest Runs</h3>
+                  <div class="field">
+                    <label>Value</label>
+                    <input type="number" min="1" name="duration_value" value="30" />
+                  </div>
+                  <div class="field">
+                    <label>Unit</label>
+                    <select name="duration_unit" id="duration-unit">
+                      <option value="seconds">Seconds</option>
+                      <option value="minutes">Minutes</option>
+                      <option value="hours">Hours</option>
+                    </select>
+                  </div>
+                  <div class="duration-preview">
+                    <span id="duration-help">Quick check preset.</span>
+                    <strong id="duration-preview">30 seconds</strong>
                   </div>
                 </div>
-                <div id="recent-runs" class="run-list compact-list"></div>
-              </div>
-            </section>
-          </div>
-        </section>
 
-        <section id="page-dashboard" class="page">
-          <div class="page-grid dashboard-grid">
-            <section class="panel">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">Live Monitoring</p>
-                  <h2>Dashboard</h2>
-                </div>
-                <p class="hint">Follow one active run closely and adjust the load while the charts update in real time.</p>
-              </div>
-              <div class="grid two">
-                <label>
-                  <span>Focused active run</span>
-                  <select id="active-run-select"></select>
-                </label>
-                <div class="button-row align-end">
-                  <button id="pause-run" type="button">Pause</button>
-                  <button id="resume-run" type="button">Resume</button>
-                  <button id="stop-run" type="button" class="danger">Stop</button>
+                <div class="preset-row" style="margin-top: 12px;">
+                  <button type="button" class="ghost" data-duration-preset="quick">30s Quick</button>
+                  <button type="button" class="ghost" data-duration-preset="benchmark">5m Bench</button>
+                  <button type="button" class="ghost" data-duration-preset="stability">30m Soak</button>
                 </div>
               </div>
-              <div id="dashboard-empty" class="empty-state">
-                No active runs yet. Start a run from the setup page and it will appear here.
-              </div>
-              <div id="dashboard-summary" class="summary-cards"></div>
-              <div id="dashboard-warnings" class="warning-list"></div>
-              <div class="panel inset-panel">
-                <div class="section-head compact">
-                  <div>
-                    <p class="section-kicker">Run Log</p>
-                    <h3>Live Events</h3>
-                  </div>
-                  <p class="hint">Brief lifecycle, sample, and error messages for the focused run.</p>
-                </div>
-                <div id="dashboard-logs" class="log-console"></div>
-              </div>
-            </section>
 
-            <section class="panel">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">While Running</p>
-                  <h2>Adjust Load</h2>
-                </div>
+              <div class="grid three">
+                <div class="field"><label>Initial Rows</label><input type="number" name="initial_rows" value="5000" /></div>
+                <div class="field"><label>Payload Size (B)</label><input type="number" name="payload_size_bytes" value="256" /></div>
+                <div class="field"><label>Concurrency</label><input type="number" name="concurrency" value="4" /></div>
               </div>
-              <div class="grid two">
-                <label>
-                  <span>Concurrency</span>
-                  <input id="live-concurrency" type="range" min="1" max="32" value="4" />
-                </label>
-                <label>
-                  <span>Exact concurrency</span>
-                  <input id="live-concurrency-input" type="number" min="1" value="4" />
-                </label>
-              </div>
-              <div class="inline-metric">Current value: <strong id="live-concurrency-value">4</strong></div>
+
               <div class="mix-grid">
-                <label><span>Point reads %</span><input id="live-point" type="number" min="0" max="100" value="50" /></label>
-                <label><span>Range scans %</span><input id="live-range" type="number" min="0" max="100" value="10" /></label>
-                <label><span>Inserts %</span><input id="live-insert" type="number" min="0" max="100" value="20" /></label>
-                <label><span>Updates %</span><input id="live-update" type="number" min="0" max="100" value="20" /></label>
+                <div class="field"><label>Reads %</label><input type="number" name="point_reads" value="50" /></div>
+                <div class="field"><label>Scans %</label><input type="number" name="range_scans" value="10" /></div>
+                <div class="field"><label>Inserts %</label><input type="number" name="inserts" value="20" /></div>
+                <div class="field"><label>Updates %</label><input type="number" name="updates" value="20" /></div>
               </div>
-              <div class="button-row">
-                <button id="apply-live-controls" type="button">Apply live settings</button>
-              </div>
-              <p class="hint">Use this page for active runs only. Completed runs move into the history page for comparison.</p>
-            </section>
-          </div>
 
-          <section class="charts">
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Reads / Writes Per Second</h2>
-                <p class="hint">Axes show elapsed time and throughput scale. Stats include current, min, max, average, and median.</p>
+              <div class="field">
+                <label>Ramp Schedule (JSON Array)</label>
+                <textarea name="ramp_schedule" rows="2">[]</textarea>
               </div>
-              <div id="dashboard-throughput-legend" class="chart-legend"></div>
-              <canvas id="dashboard-throughput-chart" width="980" height="320"></canvas>
-              <div id="dashboard-throughput-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Latency</h2>
-                <p class="hint">Track p50 and p95 latency so throughput gains do not hide tail regressions.</p>
-              </div>
-              <div id="dashboard-latency-legend" class="chart-legend"></div>
-              <canvas id="dashboard-latency-chart" width="980" height="300"></canvas>
-              <div id="dashboard-latency-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Memory Usage</h2>
-              </div>
-              <div id="dashboard-memory-legend" class="chart-legend"></div>
-              <canvas id="dashboard-memory-chart" width="980" height="300"></canvas>
-              <div id="dashboard-memory-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Disk I/O</h2>
-              </div>
-              <div id="dashboard-io-legend" class="chart-legend"></div>
-              <canvas id="dashboard-io-chart" width="980" height="300"></canvas>
-              <div id="dashboard-io-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Disk Space Usage</h2>
-              </div>
-              <div id="dashboard-disk-legend" class="chart-legend"></div>
-              <canvas id="dashboard-disk-chart" width="980" height="300"></canvas>
-              <div id="dashboard-disk-stats" class="series-stats"></div>
-            </article>
-          </section>
-        </section>
 
-        <section id="page-history" class="page">
-          <div class="page-grid history-grid">
-            <section class="panel">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">Past Sessions</p>
-                  <h2>Run History</h2>
-                </div>
-                <p class="hint">Select one or more completed runs to overlay them on the comparison charts.</p>
-              </div>
-              <div id="history-run-list" class="run-list"></div>
-            </section>
-
-            <section class="panel">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">Selected Runs</p>
-                  <h2>Comparison Summary</h2>
-                </div>
-              </div>
-              <div id="history-summary" class="summary-cards"></div>
               <div class="panel inset-panel">
-                <div class="section-head compact">
-                  <div>
-                    <p class="section-kicker">Saved Logs</p>
-                    <h3>Recent Run Events</h3>
-                  </div>
-                  <p class="hint">Latest persisted events for the runs you selected.</p>
+                <h3>Profiling Options</h3>
+                <div class="grid two">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="run-worker-perf" /> Enable `perf`
+                  </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="run-worker-strace" /> Enable `strace`
+                  </label>
                 </div>
-                <div id="history-logs" class="log-console"></div>
               </div>
-            </section>
+
+              <div class="button-row">
+                <button type="submit" style="width: 200px;">Start Benchmark</button>
+              </div>
+            </form>
           </div>
 
-          <section class="charts">
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Reads / Writes Per Second</h2>
+          <div class="panel span-4">
+            <div class="section-head">
+              <h2>Setup Summary</h2>
+            </div>
+            <div id="setup-summary" class="summary-list"></div>
+            <div id="setup-validation" class="warning-list"></div>
+
+            <div style="margin-top: 32px;">
+              <h3>Recent Sessions</h3>
+              <div id="recent-runs" class="run-list compact-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Dashboard Page -->
+      <section id="page-dashboard" class="page">
+        <div class="dashboard-grid">
+          <div class="panel span-12">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Live Monitoring</p>
+                <h2>Active Session</h2>
               </div>
-              <div id="history-throughput-legend" class="chart-legend"></div>
-              <canvas id="history-throughput-chart" width="980" height="320"></canvas>
-              <div id="history-throughput-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Latency</h2>
+              <div class="controls">
+                <select id="active-run-select" style="min-width: 250px;"></select>
+                <button id="pause-run" class="ghost">Pause</button>
+                <button id="resume-run" class="ghost">Resume</button>
+                <button id="stop-run" class="danger">Stop</button>
               </div>
-              <div id="history-latency-legend" class="chart-legend"></div>
-              <canvas id="history-latency-chart" width="980" height="300"></canvas>
-              <div id="history-latency-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Memory Usage</h2>
+            </div>
+
+            <div id="dashboard-empty" class="empty-state">
+              Waiting for an active session...
+            </div>
+
+            <div id="dashboard-summary" class="stats-row"></div>
+            <div id="dashboard-warnings" class="warning-list"></div>
+          </div>
+
+          <div class="panel span-12">
+            <div class="tabs" id="dashboard-tabs">
+              <button class="tab-btn is-active" data-tab="charts">Metrics</button>
+              <button class="tab-btn" data-tab="logs">Log Explorer</button>
+              <button class="tab-btn" data-tab="controls">Load Control</button>
+              <button class="tab-btn" data-tab="artifacts">Artifacts</button>
+            </div>
+
+            <div class="tab-content" id="tab-charts">
+              <div class="dashboard-grid">
+                <div class="panel span-6 chart-panel">
+                  <div class="chart-header"><h2>Throughput (ops/s)</h2><div id="dashboard-throughput-legend"></div></div>
+                  <canvas id="dashboard-throughput-chart"></canvas>
+                  <div id="dashboard-throughput-stats"></div>
+                </div>
+                <div class="panel span-6 chart-panel">
+                  <div class="chart-header"><h2>Latency (ms)</h2><div id="dashboard-latency-legend"></div></div>
+                  <canvas id="dashboard-latency-chart"></canvas>
+                  <div id="dashboard-latency-stats"></div>
+                </div>
+                <div class="panel span-4 chart-panel">
+                  <div class="chart-header"><h2>Memory (RSS)</h2></div>
+                  <canvas id="dashboard-memory-chart"></canvas>
+                </div>
+                <div class="panel span-4 chart-panel">
+                  <div class="chart-header"><h2>Disk I/O</h2></div>
+                  <canvas id="dashboard-io-chart"></canvas>
+                </div>
+                <div class="panel span-4 chart-panel">
+                  <div class="chart-header"><h2>Disk Usage</h2></div>
+                  <canvas id="dashboard-disk-chart"></canvas>
+                </div>
               </div>
-              <div id="history-memory-legend" class="chart-legend"></div>
-              <canvas id="history-memory-chart" width="980" height="300"></canvas>
-              <div id="history-memory-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Disk I/O</h2>
+            </div>
+
+            <div class="tab-content" id="tab-logs" style="display: none;">
+              <div class="log-explorer">
+                <div class="log-toolbar">
+                  <div class="log-search"><input type="text" id="log-search-input" placeholder="Search logs..." /></div>
+                  <select id="log-level-filter">
+                    <option value="all">All Levels</option>
+                    <option value="info">Info</option>
+                    <option value="warn">Warning</option>
+                    <option value="error">Error</option>
+                  </select>
+                </div>
+                <div id="dashboard-logs" class="log-viewport"></div>
               </div>
-              <div id="history-io-legend" class="chart-legend"></div>
-              <canvas id="history-io-chart" width="980" height="300"></canvas>
-              <div id="history-io-stats" class="series-stats"></div>
-            </article>
-            <article class="panel chart-panel">
-              <div class="chart-head">
-                <h2>Disk Space Usage</h2>
+            </div>
+
+            <div class="tab-content" id="tab-controls" style="display: none;">
+              <div class="dashboard-grid">
+                <div class="panel span-6">
+                  <h3>Live Concurrency</h3>
+                  <div class="field">
+                    <input id="live-concurrency" type="range" min="1" max="32" value="4" />
+                    <div class="inline-metric">Target: <strong id="live-concurrency-value">4</strong></div>
+                  </div>
+                </div>
+                <div class="panel span-6">
+                  <h3>Live Workload Mix</h3>
+                  <div class="mix-grid">
+                    <div class="field"><label>Reads %</label><input id="live-point" type="number" value="50" /></div>
+                    <div class="field"><label>Scans %</label><input id="live-range" type="number" value="10" /></div>
+                    <div class="field"><label>Inserts %</label><input id="live-insert" type="number" value="20" /></div>
+                    <div class="field"><label>Updates %</label><input id="live-update" type="number" value="20" /></div>
+                  </div>
+                </div>
+                <div class="span-12">
+                  <button id="apply-live-controls">Apply Dynamic Settings</button>
+                </div>
               </div>
-              <div id="history-disk-legend" class="chart-legend"></div>
-              <canvas id="history-disk-chart" width="980" height="300"></canvas>
-              <div id="history-disk-stats" class="series-stats"></div>
-            </article>
-          </section>
-        </section>
-      </main>
+            </div>
+
+            <div class="tab-content" id="tab-artifacts" style="display: none;">
+              <div id="dashboard-artifacts" class="artifact-grid">
+                <p class="text-dim">No artifacts generated for this run yet.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- History Page -->
+      <section id="page-history" class="page">
+        <div class="dashboard-grid">
+          <div class="panel span-4">
+            <div class="section-head">
+              <h2>Session History</h2>
+            </div>
+            <div id="history-run-list" class="run-list"></div>
+          </div>
+
+          <div class="panel span-8">
+            <div class="tabs" id="history-tabs">
+              <button class="tab-btn is-active" data-tab="comparison">Comparison Summary</button>
+              <button class="tab-btn" data-tab="history-charts">Metric Overlay</button>
+              <button class="tab-btn" data-tab="history-logs">Event Logs</button>
+            </div>
+
+            <div class="tab-content" id="tab-comparison">
+              <div id="history-summary" class="artifact-grid"></div>
+            </div>
+
+            <div class="tab-content" id="tab-history-charts" style="display: none;">
+              <div class="dashboard-grid">
+                <div class="panel span-12 chart-panel">
+                  <div class="chart-header"><h2>Throughput Comparison</h2><div id="history-throughput-legend"></div></div>
+                  <canvas id="history-throughput-chart"></canvas>
+                </div>
+                <div class="panel span-12 chart-panel">
+                  <div class="chart-header"><h2>Latency Comparison</h2><div id="history-latency-legend"></div></div>
+                  <canvas id="history-latency-chart"></canvas>
+                </div>
+              </div>
+            </div>
+
+            <div class="tab-content" id="tab-history-logs" style="display: none;">
+              <div id="history-logs" class="log-viewport log-explorer" style="height: 500px;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Artifact Modal Viewer -->
+  <div id="artifact-modal" class="artifact-viewer-modal">
+    <div class="modal-header">
+      <h2 id="modal-title">Artifact Viewer</h2>
+      <button id="close-modal" class="ghost">Close</button>
     </div>
-    <script src="/app.js" defer></script>
-  </body>
+    <div class="modal-content" id="modal-content"></div>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+
 </html>

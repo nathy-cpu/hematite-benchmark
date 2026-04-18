@@ -20,6 +20,12 @@ pub struct ArtifactPaths {
     pub data_dir: String,
     #[serde(default)]
     pub logs_path: String,
+    #[serde(default)]
+    pub perf_data_path: Option<String>,
+    #[serde(default)]
+    pub flamegraph_path: Option<String>,
+    #[serde(default)]
+    pub strace_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +243,7 @@ mod tests {
             ramp_schedule: vec![],
             storage: StorageConfig::default(),
             durability: None,
+            profiling: None,
         };
         let summary = RunSummary {
             run_id: "run".to_string(),
@@ -256,6 +263,9 @@ mod tests {
                 control_events_path: "controls".to_string(),
                 data_dir: "data".to_string(),
                 logs_path: "logs".to_string(),
+                perf_data_path: None,
+                flamegraph_path: None,
+                strace_paths: Vec::new(),
             },
             avg_writes_per_sec: 1.0,
             avg_reads_per_sec: 2.0,
