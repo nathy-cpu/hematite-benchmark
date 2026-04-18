@@ -748,14 +748,17 @@ async function viewArtifact(runId, filename, label) {
   
   try {
     const url = `/api/runs/${runId}/artifact?name=${filename}`;
+    const res = await fetch(url);
     if (filename.endsWith(".svg")) {
-      const res = await fetch(url);
       const svg = await res.text();
       content.innerHTML = svg;
     } else {
-      const res = await fetch(url);
       const text = await res.text();
-      content.innerHTML = `<pre style="width:100%; height:100%; padding:20px; background:#f8fafc; color:#1e293b; overflow:auto;">${escapeHtml(text)}</pre>`;
+      content.innerHTML = `
+        <div style="height: 100%; display: flex; flex-direction: column;">
+          <pre style="flex: 1; margin: 0; padding: 20px; background: rgba(0,0,0,0.4); color: #e2e8f0; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.5; overflow: auto; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); white-space: pre-wrap; word-break: break-all;">${escapeHtml(text)}</pre>
+        </div>
+      `;
     }
   } catch (e) {
     content.innerHTML = `<p class="error">Failed to load artifact: ${e.message}</p>`;

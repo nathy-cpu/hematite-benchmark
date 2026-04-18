@@ -17,6 +17,7 @@ use std::ffi::OsStr;
 use std::path::{Path as FsPath, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -229,13 +230,17 @@ async fn get_artifact(
         return Err(ApiError::not_found("artifact not found"));
     }
     let bytes = fs::read(&path).await?;
-    let content_type = match path.extension().and_then(|s| s.to_str()) {
-        Some("svg") => "image/svg+xml",
-        Some("json") => "application/json",
-        Some("txt") | Some("log") | Some("out") => "text/plain",
-        Some("perf") | Some("data") => "application/octet-stream",
-        Some("gz") => "application/gzip",
-        _ => "application/octet-stream",
+    let content_type = if name.starts_with("strace") {
+        "text/plain"
+    } else {
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("svg") => "image/svg+xml",
+            Some("json") => "application/json",
+            Some("txt") | Some("log") | Some("out") => "text/plain",
+            Some("perf") | Some("data") => "application/octet-stream",
+            Some("gz") => "application/gzip",
+            _ => "application/octet-stream",
+        }
     };
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response())
 }
@@ -353,7 +358,7 @@ async fn start_run(
         },
     )
     .await?;
-    let active = match register_worker(
+    let active = register_worker(
         state.clone(),
         run_id.clone(),
         run_dir.clone(),
