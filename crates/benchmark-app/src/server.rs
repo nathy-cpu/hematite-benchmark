@@ -106,6 +106,7 @@ struct StoredRun {
 struct ActiveRun {
     stdin: Arc<Mutex<ChildStdin>>,
     tx: broadcast::Sender<WorkerEvent>,
+    abort_tx: mpsc::Sender<()>,
 }
 
 struct SpawnedWorker {
@@ -359,21 +360,13 @@ async fn start_run(
         spawned.child,
         tx.clone(),
     )
-    .await
-    {
-        Ok(active) => active,
-        Err(error) => {
-            state.runs.write().await.remove(&run_id);
-            return Err(error);
-        }
-    };
+    .await?;
 
-    {
-        let mut runs = state.runs.write().await;
-        if let Some(run) = runs.get_mut(&run_id) {
-            run.active = Some(active);
-        }
+    let mut runs = state.runs.write().await;
+    if let Some(run) = runs.get_mut(&run_id) {
+        run.active = Some(active);
     }
+    drop(runs);
 
     Ok(Json(RunListItem {
         run_id,
@@ -406,9 +399,21 @@ async fn control_run(
 
     let mut stdin = stdin.lock().await;
     let payload = serde_json::to_vec(&message)?;
-    stdin.write_all(&payload).await?;
-    stdin.write_all(b"\n").await?;
-    stdin.flush().await?;
+    let write_res = stdin.write_all(&payload).await;
+    if write_res.is_ok() {
+        let _ = stdin.write_all(b"\n").await;
+        let _ = stdin.flush().await;
+    }
+
+    if message == ControlMessage::Stop {
+        let runs = state.runs.read().await;
+        if let Some(run) = runs.get(&run_id) {
+            if let Some(active) = &run.active {
+                let _ = active.abort_tx.send(()).await;
+            }
+        }
+    }
+
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -444,6 +449,7 @@ async fn register_worker(
     mut child: Child,
     tx: broadcast::Sender<WorkerEvent>,
 ) -> Result<ActiveRun, ApiError> {
+    let (abort_tx, mut abort_rx) = mpsc::channel(1);
     let stdout = child.stdout.take().context("worker stdout missing")?;
     let stderr = child.stderr.take().context("worker stderr missing")?;
     let stdin = child.stdin.take().context("worker stdin missing")?;
@@ -510,7 +516,15 @@ async fn register_worker(
     let post_run_id = run_id.clone();
     let post_run_dir = run_dir.clone();
     let _post_task = tokio::spawn(async move {
-        let _ = child.wait().await;
+        tokio::select! {
+            _ = child.wait() => {
+                info!(run_id = %post_run_id, "Worker process exited naturally");
+            }
+            _ = abort_rx.recv() => {
+                info!(run_id = %post_run_id, "Force-killing stalled worker process");
+                let _ = child.kill().await;
+            }
+        }
 
         // Post-run: scan the run directory for perf data files (and process each).
         // Prefer the spawn-options.json file (written at spawn time) for per-run decisions;
@@ -828,7 +842,7 @@ async fn register_worker(
         }
     });
 
-    Ok(ActiveRun { stdin, tx })
+    Ok(ActiveRun { stdin, tx, abort_tx })
 }
 
 async fn handle_worker_event(
