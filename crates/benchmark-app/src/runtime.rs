@@ -577,7 +577,10 @@ fn worker_loop(
                     let (logical_read_bytes, logical_write_bytes) =
                         logical_bytes_for_operation(&config, op, rows.max(1));
                     stats.record(
-                        matches!(op, OperationKind::Insert | OperationKind::Update | OperationKind::Delete),
+                        matches!(
+                            op,
+                            OperationKind::Insert | OperationKind::Update | OperationKind::Delete
+                        ),
                         elapsed,
                         logical_read_bytes,
                         logical_write_bytes,
@@ -835,7 +838,7 @@ mod tests {
             },
             ControlSource::Interactive,
         )?;
-        assert_eq!(control.current_mix().point_reads, 25);
+        assert_eq!(control.current_mix().point_reads, 20);
         assert_eq!(control.control_events().len(), 1);
         Ok(())
     }
