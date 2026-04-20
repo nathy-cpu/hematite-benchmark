@@ -320,6 +320,8 @@ function readFormState(form, options = {}) {
           range_scans: Number(form.range_scans?.value || 0),
           inserts: Number(form.inserts?.value || 0),
           updates: Number(form.updates?.value || 0),
+          deletes: Number(form.deletes?.value || 0),
+          aggregates: Number(form.aggregates?.value || 0),
         },
       },
       ramp_schedule: rampResult.value,
@@ -373,7 +375,9 @@ function renderSetupSummary() {
     config.load.mix.point_reads +
     config.load.mix.range_scans +
     config.load.mix.inserts +
-    config.load.mix.updates;
+    config.load.mix.updates +
+    config.load.mix.deletes +
+    config.load.mix.aggregates;
 
   document.getElementById("setup-summary").innerHTML = `
     <div class="summary-item">
@@ -493,6 +497,8 @@ function syncLiveControlsFromDetail(detail) {
   document.getElementById("live-range").value = load.mix.range_scans;
   document.getElementById("live-insert").value = load.mix.inserts;
   document.getElementById("live-update").value = load.mix.updates;
+  document.getElementById("live-delete").value = load.mix.deletes;
+  document.getElementById("live-aggregate").value = load.mix.aggregates;
 }
 
 function renderHistoryList() {
@@ -1280,13 +1286,16 @@ function setupControls() {
     const rangeScans = Number(document.getElementById("live-range").value);
     const inserts = Number(document.getElementById("live-insert").value);
     const updates = Number(document.getElementById("live-update").value);
-    if (pointReads + rangeScans + inserts + updates !== 100) {
+    const deletes = Number(document.getElementById("live-delete").value);
+    const aggregates = Number(document.getElementById("live-aggregate").value);
+
+    if (pointReads + rangeScans + inserts + updates + deletes + aggregates !== 100) {
       alert("The live mix must add up to 100.");
       return;
     }
     await sendControl(state.activeRunId, {
       kind: "update_concurrency",
-      concurrency: Number(concurrencyInput.value),
+      concurrency: Number(document.getElementById("live-concurrency").value),
     });
     await sendControl(state.activeRunId, {
       kind: "update_mix",
@@ -1294,6 +1303,8 @@ function setupControls() {
       range_scans: rangeScans,
       inserts,
       updates,
+      deletes,
+      aggregates,
     });
   });
   // Profiling controls: apply and dynamic enable/disable

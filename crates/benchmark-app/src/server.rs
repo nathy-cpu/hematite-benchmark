@@ -1354,12 +1354,16 @@ fn apply_control_events(
                 range_scans,
                 inserts,
                 updates,
+                deletes,
+                aggregates,
             } => {
                 config.load.mix = benchmark_core::OperationMix {
                     point_reads: *point_reads,
                     range_scans: *range_scans,
                     inserts: *inserts,
                     updates: *updates,
+                    deletes: *deletes,
+                    aggregates: *aggregates,
                 };
             }
             ControlMessage::ApplyPhase { phase } => config.apply_phase(phase),

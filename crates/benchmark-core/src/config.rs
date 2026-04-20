@@ -152,6 +152,8 @@ pub enum OperationKind {
     RangeScan,
     Insert,
     Update,
+    Delete,
+    Aggregate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +162,8 @@ pub struct OperationMix {
     pub range_scans: u8,
     pub inserts: u8,
     pub updates: u8,
+    pub deletes: u8,
+    pub aggregates: u8,
 }
 
 impl OperationMix {
@@ -178,12 +182,16 @@ impl OperationMix {
             + self.range_scans as u16
             + self.inserts as u16
             + self.updates as u16
+            + self.deletes as u16
+            + self.aggregates as u16
     }
 
     pub fn choose(&self, slot: u8) -> OperationKind {
         let point_end = self.point_reads;
         let range_end = point_end.saturating_add(self.range_scans);
         let insert_end = range_end.saturating_add(self.inserts);
+        let update_end = insert_end.saturating_add(self.updates);
+        let delete_end = update_end.saturating_add(self.deletes);
 
         if slot < point_end {
             OperationKind::PointRead
@@ -191,8 +199,12 @@ impl OperationMix {
             OperationKind::RangeScan
         } else if slot < insert_end {
             OperationKind::Insert
-        } else {
+        } else if slot < update_end {
             OperationKind::Update
+        } else if slot < delete_end {
+            OperationKind::Delete
+        } else {
+            OperationKind::Aggregate
         }
     }
 }
@@ -200,10 +212,12 @@ impl OperationMix {
 impl Default for OperationMix {
     fn default() -> Self {
         Self {
-            point_reads: 50,
+            point_reads: 40,
             range_scans: 10,
             inserts: 20,
             updates: 20,
+            deletes: 5,
+            aggregates: 5,
         }
     }
 }
@@ -390,6 +404,8 @@ mod tests {
                 range_scans: 25,
                 inserts: 25,
                 updates: 25,
+                deletes: 0,
+                aggregates: 0,
             }),
         };
 

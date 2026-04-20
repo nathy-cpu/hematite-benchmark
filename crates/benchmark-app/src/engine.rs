@@ -27,6 +27,8 @@ pub trait EngineAdapter: Send {
     fn range_scan(&mut self, start_id: u64, limit: usize) -> Result<usize>;
     fn insert_row(&mut self, row: &BenchRow) -> Result<()>;
     fn update_row(&mut self, row: &BenchRow) -> Result<usize>;
+    fn delete_row(&mut self, id: u64) -> Result<usize>;
+    fn aggregate(&mut self) -> Result<usize>;
     fn flush(&mut self) -> Result<()>;
 }
 
@@ -69,8 +71,9 @@ pub fn logical_bytes_for_operation(
     let payload_bytes = config.scenario.payload_size_bytes as u64;
     match op {
         OperationKind::PointRead => (payload_bytes, 0),
-        OperationKind::RangeScan => (payload_bytes * rows as u64, 0),
+        OperationKind::RangeScan | OperationKind::Aggregate => (payload_bytes * rows as u64, 0),
         OperationKind::Insert | OperationKind::Update => (0, payload_bytes),
+        OperationKind::Delete => (0, 0),
     }
 }
 
@@ -180,6 +183,21 @@ impl EngineAdapter for SqliteAdapter {
             params![row.id as i64, row.score, row.payload, row.updated_at],
         )?;
         Ok(affected)
+    }
+
+    fn delete_row(&mut self, id: u64) -> Result<usize> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM bench_records WHERE id = ?1", params![id as i64])?;
+        Ok(affected)
+    }
+
+    fn aggregate(&mut self) -> Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT category, COUNT(*), SUM(score) FROM bench_records GROUP BY category",
+        )?;
+        let rows = stmt.query_map([], |_| Ok(()))?;
+        Ok(rows.count())
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -299,6 +317,20 @@ impl EngineAdapter for HematiteAdapter {
         Ok(result.affected_rows)
     }
 
+    fn delete_row(&mut self, id: u64) -> Result<usize> {
+        let result = self
+            .db
+            .execute(&format!("DELETE FROM bench_records WHERE id = {};", id))?;
+        Ok(result.affected_rows)
+    }
+
+    fn aggregate(&mut self) -> Result<usize> {
+        let rows = self.db.query(
+            "SELECT category, COUNT(*), SUM(score) FROM bench_records GROUP BY category;",
+        )?;
+        Ok(rows.rows.len())
+    }
+
     fn flush(&mut self) -> Result<()> {
         self.db.checkpoint_wal().ok();
         Ok(())
@@ -346,6 +378,10 @@ pub fn execute_operation(
             row.score += 1;
             adapter.update_row(&row)
         }
+        OperationKind::Delete => {
+            adapter.delete_row(choose_existing_id(next_id.saturating_sub(1)))
+        }
+        OperationKind::Aggregate => adapter.aggregate(),
     }
 }
 
@@ -392,6 +428,8 @@ mod tests {
         assert!(adapter.range_scan(1, 5)? >= 1);
         adapter.insert_row(&make_row(&config, 51))?;
         assert_eq!(adapter.update_row(&make_row(&config, 10))?, 1);
+        assert_eq!(adapter.delete_row(5)?, 1);
+        assert!(adapter.aggregate()? >= 1);
         Ok(())
     }
 

@@ -87,12 +87,16 @@ impl RuntimeControl {
                 range_scans,
                 inserts,
                 updates,
+                deletes,
+                aggregates,
             } => {
                 let mix = OperationMix {
                     point_reads: *point_reads,
                     range_scans: *range_scans,
                     inserts: *inserts,
                     updates: *updates,
+                    deletes: *deletes,
+                    aggregates: *aggregates,
                 };
                 mix.validate().map_err(anyhow::Error::msg)?;
                 *self.mix.lock().expect("mix lock poisoned") = mix.clone();
@@ -573,7 +577,7 @@ fn worker_loop(
                     let (logical_read_bytes, logical_write_bytes) =
                         logical_bytes_for_operation(&config, op, rows.max(1));
                     stats.record(
-                        matches!(op, OperationKind::Insert | OperationKind::Update),
+                        matches!(op, OperationKind::Insert | OperationKind::Update | OperationKind::Delete),
                         elapsed,
                         logical_read_bytes,
                         logical_write_bytes,
@@ -822,10 +826,12 @@ mod tests {
         let control = RuntimeControl::new(config());
         control.apply(
             ControlMessage::UpdateMix {
-                point_reads: 25,
-                range_scans: 25,
-                inserts: 25,
-                updates: 25,
+                point_reads: 20,
+                range_scans: 20,
+                inserts: 20,
+                updates: 20,
+                deletes: 10,
+                aggregates: 10,
             },
             ControlSource::Interactive,
         )?;

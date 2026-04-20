@@ -153,6 +153,8 @@ pub enum ControlMessage {
         range_scans: u8,
         inserts: u8,
         updates: u8,
+        deletes: u8,
+        aggregates: u8,
     },
     ApplyPhase {
         phase: RampPhase,
