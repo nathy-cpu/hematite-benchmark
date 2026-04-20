@@ -805,44 +805,26 @@ async fn register_worker(
         // Update saved summary to include any artifacts produced after the run (perf data, flamegraph, strace)
         let summary_path = post_run_dir.join("summary.json");
         if summary_path.exists() {
-            match fs::read(&summary_path).await {
-                Ok(bytes) => {
-                    if let Ok(mut existing_summary) = serde_json::from_slice::<RunSummary>(&bytes) {
-                        existing_summary.artifact_paths = artifact_paths(&post_run_dir);
-                        match serde_json::to_vec_pretty(&existing_summary) {
-                            Ok(serialized) => {
-                                if let Err(e) = fs::write(&summary_path, &serialized).await {
-                                    error!(
-                                        ?e,
-                                        "failed to write updated summary.json with artifacts"
-                                    );
-                                } else {
-                                    let _ = record_run_log(
-                                        &post_state,
-                                        &post_run_id,
-                                        RunLogEntry {
-                                            timestamp_ms: now_ms(),
-                                            level: RunLogLevel::Info,
-                                            source: RunLogSource::Server,
-                                            message: format!("updated summary artifact paths"),
-                                        },
-                                    )
-                                    .await;
-                                    let mut runs = post_state.runs.write().await;
-                                    if let Some(run) = runs.get_mut(&post_run_id) {
-                                        run.summary = Some(existing_summary.clone());
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!(?e, "failed to serialize updated summary.json");
+            if let Ok(bytes) = fs::read(&summary_path).await {
+                if let Ok(mut existing_summary) = serde_json::from_slice::<RunSummary>(&bytes) {
+                    existing_summary.artifact_paths = artifact_paths(&post_run_dir);
+                    if let Ok(serialized) = serde_json::to_vec_pretty(&existing_summary) {
+                        if fs::write(&summary_path, &serialized).await.is_ok() {
+                            let mut runs = post_state.runs.write().await;
+                            if let Some(run) = runs.get_mut(&post_run_id) {
+                                run.summary = Some(existing_summary.clone());
                             }
                         }
                     }
                 }
-                Err(e) => {
-                    error!(?e, "failed to read summary.json for artifact update");
-                }
+            }
+        }
+
+        let mut runs = post_state.runs.write().await;
+        if let Some(run) = runs.get_mut(&post_run_id) {
+            run.active = None;
+            if run.status == RunStatus::Pending {
+                run.status = RunStatus::Interrupted;
             }
         }
     });
