@@ -522,12 +522,24 @@ async fn register_worker(
     let post_run_dir = run_dir.clone();
     let _post_task = tokio::spawn(async move {
         tokio::select! {
-            _ = child.wait() => {
-                info!(run_id = %post_run_id, "Worker process exited naturally");
+            status = child.wait() => {
+                match status {
+                    Ok(s) => info!(run_id = %post_run_id, "Worker process exited naturally with status: {s}"),
+                    Err(e) => error!(run_id = %post_run_id, "Error waiting for worker: {e}"),
+                }
             }
             _ = abort_rx.recv() => {
-                info!(run_id = %post_run_id, "Force-killing stalled worker process");
-                let _ = child.kill().await;
+                info!(run_id = %post_run_id, "Graceful stop requested; waiting for process to finish...");
+                // Give it a moment to finish gracefully after the Stop command was sent to stdin
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                        warn!(run_id = %post_run_id, "Worker didn't stop gracefully; force-killing...");
+                        let _ = child.kill().await;
+                    }
+                    _ = child.wait() => {
+                        info!(run_id = %post_run_id, "Worker stopped gracefully after abort request");
+                    }
+                }
             }
         }
 
@@ -737,7 +749,8 @@ async fn register_worker(
                                 }
                             }
                         }
-                        _ => {
+                        Ok(perf_script_out) => {
+                            let error_msg = String::from_utf8_lossy(&perf_script_out.stderr).to_string();
                             let _ = record_run_log(
                                 &post_state,
                                 &post_run_id,
@@ -745,7 +758,20 @@ async fn register_worker(
                                     timestamp_ms: now_ms(),
                                     level: RunLogLevel::Warn,
                                     source: RunLogSource::Server,
-                                    message: format!("failed to run `perf script` on {}; leaving perf data in run dir", perf_path.display()),
+                                    message: format!("failed to run `perf script` on {}: {}", perf_path.display(), error_msg),
+                                },
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            let _ = record_run_log(
+                                &post_state,
+                                &post_run_id,
+                                RunLogEntry {
+                                    timestamp_ms: now_ms(),
+                                    level: RunLogLevel::Warn,
+                                    source: RunLogSource::Server,
+                                    message: format!("failed to spawn `perf script` on {}: {}", perf_path.display(), e),
                                 },
                             )
                             .await;
