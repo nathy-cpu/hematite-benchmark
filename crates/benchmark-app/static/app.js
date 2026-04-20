@@ -1221,7 +1221,9 @@ function setupForm() {
         config.load.mix.point_reads +
         config.load.mix.range_scans +
         config.load.mix.inserts +
-        config.load.mix.updates;
+        config.load.mix.updates +
+        config.load.mix.deletes +
+        config.load.mix.aggregates;
       if (mixTotal !== 100) {
         throw new Error("The workload mix must add up to 100.");
       }
@@ -1433,7 +1435,7 @@ function formatMix(mix) {
   if (!mix) {
     return "n/a";
   }
-  return `${mix.point_reads}/${mix.range_scans}/${mix.inserts}/${mix.updates}`;
+  return `${mix.point_reads}/${mix.range_scans}/${mix.inserts}/${mix.updates}/${mix.deletes}/${mix.aggregates}`;
 }
 
 async function loadServerOptions() {
