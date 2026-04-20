@@ -162,7 +162,9 @@ pub struct OperationMix {
     pub range_scans: u8,
     pub inserts: u8,
     pub updates: u8,
+    #[serde(default)]
     pub deletes: u8,
+    #[serde(default)]
     pub aggregates: u8,
 }
 
