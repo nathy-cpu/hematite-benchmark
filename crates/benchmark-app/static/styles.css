@@ -12,8 +12,8 @@
   --accent-2: #f59e0b;
   --danger: #ef4444;
   --ink: #081015;
-  --sidebar-width: 210px;
-  --header-height: 64px;
+  --sidebar-width: 170px;
+  --header-height: 56px;
   --glass-blur: 16px;
   --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -64,7 +64,7 @@ body {
 
 /* Sidebar Elements */
 .sidebar-header {
-  padding: 24px 16px;
+  padding: 16px 12px;
 }
 
 .brand {
@@ -149,7 +149,7 @@ body {
 /* Main Header */
 .top-bar {
   height: var(--header-height);
-  padding: 0 24px;
+  padding: 0 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -194,7 +194,7 @@ body {
 /* Page Containers */
 .page {
   display: none;
-  padding: 20px 24px;
+  padding: 12px 16px;
   animation: fadeIn 0.3s ease-out;
 }
 
@@ -211,26 +211,26 @@ body {
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(12, 1fr);
-  gap: 16px;
-  margin-bottom: 24px;
+  gap: 10px;
+  margin-bottom: 16px;
 }
 
 .panel {
   background: var(--panel);
   border: 1px solid var(--panel-border);
-  border-radius: 16px;
-  padding: 20px;
+  border-radius: 12px;
+  padding: 12px;
   backdrop-filter: blur(var(--glass-blur));
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
   transition: var(--transition);
   min-width: 0;
 }
 
 .inset-panel {
   background: rgba(7, 16, 21, 0.4);
-  border-radius: 14px;
-  margin-top: 10px;
-  padding: 16px;
+  border-radius: 10px;
+  margin-top: 8px;
+  padding: 10px;
 }
 
 .span-4 { grid-column: span 4; }
@@ -241,14 +241,14 @@ body {
 /* Stats Cards */
 .stats-row, .summary-list, .summary-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
 }
 
 .stat-card, .summary-card, .summary-item, .series-card {
   background: rgba(255, 255, 255, 0.02);
-  padding: 16px;
+  padding: 10px;
   border-radius: 14px;
   border: 1px solid var(--panel-border);
   display: flex;
@@ -283,9 +283,9 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .chart-header h2 {
