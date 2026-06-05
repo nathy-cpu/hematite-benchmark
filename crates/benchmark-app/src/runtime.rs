@@ -655,16 +655,17 @@ fn spawn_sampler(
             let (disk_read_bytes_per_sec, mut disk_write_bytes_per_sec) =
                 io_per_second(previous_io, current_io, sample_interval, &snapshot);
 
-            // Subtract stdout write overhead from disk write I/O.
-            // The worker emits JSON events to stdout; those pipe writes show up in
-            // /proc/self/io `write_bytes` but are not database I/O.
-            let current_stdout_bytes = STDOUT_BYTES_WRITTEN.load(Ordering::Relaxed);
-            let stdout_interval_bytes = current_stdout_bytes.saturating_sub(previous_stdout_bytes);
-            let stdout_overhead_per_sec =
-                stdout_interval_bytes as f64 / sample_interval.as_secs_f64();
-            disk_write_bytes_per_sec =
-                (disk_write_bytes_per_sec - stdout_overhead_per_sec).max(0.0);
-            previous_stdout_bytes = current_stdout_bytes;
+            // Subtract stdout write overhead from disk write I/O if OS-level counters are available.
+            // When falling back to logical write bytes, stdout overhead is not included.
+            if current_io.is_some() {
+                let current_stdout_bytes = STDOUT_BYTES_WRITTEN.load(Ordering::Relaxed);
+                let stdout_interval_bytes = current_stdout_bytes.saturating_sub(previous_stdout_bytes);
+                let stdout_overhead_per_sec =
+                    stdout_interval_bytes as f64 / sample_interval.as_secs_f64();
+                disk_write_bytes_per_sec =
+                    (disk_write_bytes_per_sec - stdout_overhead_per_sec).max(0.0);
+                previous_stdout_bytes = current_stdout_bytes;
+            }
 
             previous_io = current_io;
 
