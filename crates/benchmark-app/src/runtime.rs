@@ -772,17 +772,23 @@ fn io_per_second(
     interval: Duration,
     snapshot: &benchmark_core::SampleSnapshot,
 ) -> (f64, f64) {
-    if let (Some(previous), Some(current)) = (previous, current) {
-        let seconds = interval.as_secs_f64();
-        let read = current.read_bytes.saturating_sub(previous.read_bytes) as f64 / seconds;
-        let write = current.write_bytes.saturating_sub(previous.write_bytes) as f64 / seconds;
-        (read, write)
+    let seconds = interval.as_secs_f64();
+    // Read I/O: always use logical bytes from the snapshot.
+    // OS-level counters are misleading for reads:
+    //   - `read_bytes` (physical) is ~0 because page cache absorbs reads
+    //   - `rchar` (syscall) is inflated by /proc reads, pipe I/O, etc.
+    // Logical bytes directly measure data volume the engine operations touch.
+    let read_bytes_per_sec = snapshot.logical_read_bytes as f64 / seconds;
+
+    // Write I/O: use physical `write_bytes` from /proc/self/io when available.
+    // Physical writes reflect actual storage pressure (durability cost).
+    let write_bytes_per_sec = if let (Some(previous), Some(current)) = (previous, current) {
+        current.write_bytes.saturating_sub(previous.write_bytes) as f64 / seconds
     } else {
-        (
-            snapshot.logical_read_bytes as f64 / interval.as_secs_f64(),
-            snapshot.logical_write_bytes as f64 / interval.as_secs_f64(),
-        )
-    }
+        snapshot.logical_write_bytes as f64 / seconds
+    };
+
+    (read_bytes_per_sec, write_bytes_per_sec)
 }
 
 fn artifact_paths(run_dir: &Path, data_dir: &Path) -> ArtifactPaths {

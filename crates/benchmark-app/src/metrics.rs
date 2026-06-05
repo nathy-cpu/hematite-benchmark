@@ -87,15 +87,10 @@ pub fn current_io_counters() -> (Option<IoCounters>, IoPrecision) {
             let mut read_bytes = None;
             let mut write_bytes = None;
             for line in contents.lines() {
-                // Use `rchar` for reads: counts bytes read via syscalls including
-                // page-cache hits. The physical `read_bytes` counter is almost always
-                // near zero for benchmarks because the dataset fits in page cache
-                // after the initial load phase.
-                if let Some(value) = line.strip_prefix("rchar:") {
+                if let Some(value) = line.strip_prefix("read_bytes:") {
                     read_bytes = value.trim().parse::<u64>().ok();
                 }
-                // Keep `write_bytes` for writes: physical bytes sent to storage,
-                // which correctly reflects actual write I/O pressure.
+                // Physical bytes sent to storage — used for the write I/O metric.
                 if let Some(value) = line.strip_prefix("write_bytes:") {
                     write_bytes = value.trim().parse::<u64>().ok();
                 }
