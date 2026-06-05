@@ -1,0 +1,38 @@
+{
+  "run_name": "rollback perf",
+  "engine": "hematite",
+  "scenario": {
+    "initial_rows": 5000,
+    "payload_size_bytes": 512,
+    "category_count": 10,
+    "range_scan_size": 20
+  },
+  "load": {
+    "concurrency": 1,
+    "batch_size": 1,
+    "duration_secs": 30,
+    "sample_interval_ms": 1000,
+    "mix": {
+      "point_reads": 30,
+      "range_scans": 10,
+      "inserts": 20,
+      "updates": 20,
+      "deletes": 10,
+      "aggregates": 10
+    }
+  },
+  "ramp_schedule": [],
+  "storage": {
+    "sqlite": {
+      "journal_mode": "wal",
+      "synchronous": "normal"
+    },
+    "hematite": {
+      "journal_mode": "rollback"
+    }
+  },
+  "profiling": {
+    "worker_perf": true,
+    "worker_perf_generate_flamegraph": true
+  }
+}

@@ -78,6 +78,8 @@ pub struct MetricSample {
     pub p50_latency_ms: f64,
     pub p95_latency_ms: f64,
     pub rss_bytes: u64,
+    #[serde(default)]
+    pub total_rss_bytes: u64,
     pub disk_read_bytes_per_sec: f64,
     pub disk_write_bytes_per_sec: f64,
     pub disk_usage_bytes: u64,
@@ -208,6 +210,7 @@ mod tests {
             p50_latency_ms: 1.2,
             p95_latency_ms: 2.4,
             rss_bytes: 128,
+            total_rss_bytes: 256,
             disk_read_bytes_per_sec: 64.0,
             disk_write_bytes_per_sec: 32.0,
             disk_usage_bytes: 512,

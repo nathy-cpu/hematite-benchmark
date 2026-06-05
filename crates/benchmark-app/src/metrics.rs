@@ -10,25 +10,74 @@ pub struct IoCounters {
     pub write_bytes: u64,
 }
 
-pub fn current_rss_bytes() -> u64 {
+/// RSS breakdown: anonymous (heap+stack) and total (including file-backed mmap).
+#[derive(Debug, Clone, Copy)]
+pub struct RssInfo {
+    /// Anonymous RSS — heap, stack, and anonymous mmap only.
+    /// This is the meaningful "memory usage" for benchmarks since it excludes
+    /// file-backed pages (e.g. mmap'd database files).
+    pub anon_bytes: u64,
+    /// Total RSS including file-backed mmap pages.
+    pub total_bytes: u64,
+}
+
+pub fn current_rss_info() -> RssInfo {
     #[cfg(target_os = "linux")]
     {
+        if let Ok(contents) = fs::read_to_string("/proc/self/status") {
+            let mut anon_kb = None;
+            let mut total_kb = None;
+            for line in contents.lines() {
+                if let Some(value) = line.strip_prefix("RssAnon:") {
+                    anon_kb = parse_status_kb(value);
+                }
+                if let Some(value) = line.strip_prefix("VmRSS:") {
+                    total_kb = parse_status_kb(value);
+                }
+            }
+            if let Some(total) = total_kb {
+                return RssInfo {
+                    anon_bytes: anon_kb.unwrap_or(total) * 1024,
+                    total_bytes: total * 1024,
+                };
+            }
+        }
+        // Fallback: /proc/self/statm (no anon/total distinction available)
         if let Ok(contents) = fs::read_to_string("/proc/self/statm") {
             if let Some(rss_pages) = contents.split_whitespace().nth(1) {
                 if let Ok(pages) = rss_pages.parse::<u64>() {
-                    return pages * 4096; // Standard 4KB page size
+                    let total = pages * 4096;
+                    return RssInfo {
+                        anon_bytes: total,
+                        total_bytes: total,
+                    };
                 }
             }
         }
     }
 
+    // Non-Linux fallback via sysinfo
     let mut system = System::new();
     let pid = Pid::from_u32(std::process::id());
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    system
+    let total = system
         .process(pid)
         .map(|process| process.memory())
-        .unwrap_or(0)
+        .unwrap_or(0);
+    RssInfo {
+        anon_bytes: total,
+        total_bytes: total,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_status_kb(value: &str) -> Option<u64> {
+    value
+        .trim()
+        .trim_end_matches(" kB")
+        .trim()
+        .parse::<u64>()
+        .ok()
 }
 
 pub fn current_io_counters() -> (Option<IoCounters>, IoPrecision) {

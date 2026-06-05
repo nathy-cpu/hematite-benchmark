@@ -1,5 +1,5 @@
 use crate::engine::{EngineAdapter, execute_operation, logical_bytes_for_operation, open_engine};
-use crate::metrics::{IoCounters, current_io_counters, current_rss_bytes, dir_size_bytes};
+use crate::metrics::{IoCounters, current_io_counters, current_rss_info, dir_size_bytes};
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
     AppliedControlEvent, ArtifactPaths, BenchmarkConfig, ControlMessage, ControlSource, EngineKind,
@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 const LOCK_RETRY_TIMEOUT_MS: u64 = 500;
 const LOCK_RETRY_SLEEP_MS: u64 = 10;
 const MAX_ERROR_MESSAGES: usize = 8;
+
+/// Tracks the cumulative number of bytes written to stdout by `emit_event`.
+/// Used by the sampler to subtract non-database I/O from disk write metrics.
+static STDOUT_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct RuntimeControl {
@@ -609,6 +613,7 @@ fn spawn_sampler(
     thread::spawn(move || {
         let target_interval = Duration::from_millis(config.load.sample_interval_ms);
         let mut previous_io = current_io_counters().0;
+        let mut previous_stdout_bytes: u64 = STDOUT_BYTES_WRITTEN.load(Ordering::Relaxed);
         let mut last_sample_at = Instant::now();
 
         loop {
@@ -626,11 +631,33 @@ fn spawn_sampler(
             }
 
             let sample_interval = elapsed.max(Duration::from_millis(1));
+
+            // Skip runt samples at shutdown — they cover too little time to produce
+            // meaningful per-second rates and pollute the dashboard chart.
+            let is_runt = control.stop.load(Ordering::Relaxed)
+                && sample_interval < target_interval / 2;
+            if is_runt {
+                break;
+            }
+
             let (current_io, io_precision) = current_io_counters();
-            let (disk_read_bytes_per_sec, disk_write_bytes_per_sec) =
+            let (disk_read_bytes_per_sec, mut disk_write_bytes_per_sec) =
                 io_per_second(previous_io, current_io, sample_interval, &snapshot);
+
+            // Subtract stdout write overhead from disk write I/O.
+            // The worker emits JSON events to stdout; those pipe writes show up in
+            // /proc/self/io `write_bytes` but are not database I/O.
+            let current_stdout_bytes = STDOUT_BYTES_WRITTEN.load(Ordering::Relaxed);
+            let stdout_interval_bytes = current_stdout_bytes.saturating_sub(previous_stdout_bytes);
+            let stdout_overhead_per_sec =
+                stdout_interval_bytes as f64 / sample_interval.as_secs_f64();
+            disk_write_bytes_per_sec =
+                (disk_write_bytes_per_sec - stdout_overhead_per_sec).max(0.0);
+            previous_stdout_bytes = current_stdout_bytes;
+
             previous_io = current_io;
 
+            let rss = current_rss_info();
             let sample = MetricSample {
                 timestamp_ms: now_ms(),
                 sample_duration_ms: sample_interval.as_millis() as u64,
@@ -640,7 +667,8 @@ fn spawn_sampler(
                 reads_per_sec: snapshot.reads as f64 / sample_interval.as_secs_f64(),
                 p50_latency_ms: snapshot.p50_latency_ms,
                 p95_latency_ms: snapshot.p95_latency_ms,
-                rss_bytes: current_rss_bytes(),
+                rss_bytes: rss.anon_bytes,
+                total_rss_bytes: rss.total_bytes,
                 disk_read_bytes_per_sec,
                 disk_write_bytes_per_sec,
                 disk_usage_bytes: dir_size_bytes(&data_dir),
@@ -757,9 +785,13 @@ fn artifact_paths(run_dir: &Path, data_dir: &Path) -> ArtifactPaths {
 fn emit_event(event: &WorkerEvent) -> Result<()> {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
-    serde_json::to_writer(&mut handle, event)?;
+    let payload = serde_json::to_vec(event)?;
+    handle.write_all(&payload)?;
     writeln!(&mut handle)?;
     handle.flush()?;
+    // Track bytes written to stdout so the sampler can subtract this
+    // from OS-level I/O counters (the pipe writes appear in /proc/self/io).
+    STDOUT_BYTES_WRITTEN.fetch_add(payload.len() as u64 + 1, Ordering::Relaxed);
     Ok(())
 }
 

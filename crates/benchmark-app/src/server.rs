@@ -17,10 +17,10 @@ use std::ffi::OsStr;
 use std::path::{Path as FsPath, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::mpsc;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, error, info, warn};
@@ -153,7 +153,7 @@ pub async fn run_server_with_verbosity(
         .route("/api/runs/{run_id}/artifact", get(get_artifact))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 3000)).await?;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 3001)).await?;
     info!("benchmark dashboard listening on http://127.0.0.1:3000");
     axum::serve(listener, app).await?;
     Ok(())
@@ -495,7 +495,15 @@ async fn register_worker(
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             if let Ok(event) = serde_json::from_str::<WorkerEvent>(&line) {
-                let _ = handle_worker_event(&stdout_state, &stdout_run_id, &summary_path, &mut file, &mut control_events_file, event).await;
+                let _ = handle_worker_event(
+                    &stdout_state,
+                    &stdout_run_id,
+                    &summary_path,
+                    &mut file,
+                    &mut control_events_file,
+                    event,
+                )
+                .await;
             }
         }
     });
@@ -507,12 +515,17 @@ async fn register_worker(
     let _stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            let _ = record_run_log(&stderr_state, &stderr_run_id, RunLogEntry {
-                timestamp_ms: now_ms(),
-                level: RunLogLevel::Info,
-                source: RunLogSource::WorkerStderr,
-                message: line,
-            }).await;
+            let _ = record_run_log(
+                &stderr_state,
+                &stderr_run_id,
+                RunLogEntry {
+                    timestamp_ms: now_ms(),
+                    level: RunLogLevel::Info,
+                    source: RunLogSource::WorkerStderr,
+                    message: line,
+                },
+            )
+            .await;
         }
     });
 
@@ -681,9 +694,18 @@ async fn register_worker(
                                                             .await;
                                                         }
                                                         _ => {
-                                                            let _ = fs::write(&folded_path, &collapse_out.stdout).await;
-                                                            let perf_script_path = post_run_dir.join(format!("{}.script", stem));
-                                                            let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                                            let _ = fs::write(
+                                                                &folded_path,
+                                                                &collapse_out.stdout,
+                                                            )
+                                                            .await;
+                                                            let perf_script_path = post_run_dir
+                                                                .join(format!("{}.script", stem));
+                                                            let _ = fs::write(
+                                                                &perf_script_path,
+                                                                &perf_script_out.stdout,
+                                                            )
+                                                            .await;
                                                             let _ = record_run_log(
                                                                 &post_state,
                                                                 &post_run_id,
@@ -699,8 +721,13 @@ async fn register_worker(
                                                     }
                                                 }
                                                 Err(_) => {
-                                                    let perf_script_path = post_run_dir.join(format!("{}.script", stem));
-                                                    let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                                    let perf_script_path = post_run_dir
+                                                        .join(format!("{}.script", stem));
+                                                    let _ = fs::write(
+                                                        &perf_script_path,
+                                                        &perf_script_out.stdout,
+                                                    )
+                                                    .await;
                                                     let _ = record_run_log(
                                                         &post_state,
                                                         &post_run_id,
@@ -716,8 +743,13 @@ async fn register_worker(
                                             }
                                         }
                                         _ => {
-                                            let perf_script_path = post_run_dir.join(format!("{}.script", stem));
-                                            let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                            let perf_script_path =
+                                                post_run_dir.join(format!("{}.script", stem));
+                                            let _ = fs::write(
+                                                &perf_script_path,
+                                                &perf_script_out.stdout,
+                                            )
+                                            .await;
                                             let _ = record_run_log(
                                                 &post_state,
                                                 &post_run_id,
@@ -733,8 +765,10 @@ async fn register_worker(
                                     }
                                 }
                                 Err(_) => {
-                                    let perf_script_path = post_run_dir.join(format!("{}.script", stem));
-                                    let _ = fs::write(&perf_script_path, &perf_script_out.stdout).await;
+                                    let perf_script_path =
+                                        post_run_dir.join(format!("{}.script", stem));
+                                    let _ =
+                                        fs::write(&perf_script_path, &perf_script_out.stdout).await;
                                     let _ = record_run_log(
                                         &post_state,
                                         &post_run_id,
@@ -750,7 +784,8 @@ async fn register_worker(
                             }
                         }
                         Ok(perf_script_out) => {
-                            let error_msg = String::from_utf8_lossy(&perf_script_out.stderr).to_string();
+                            let error_msg =
+                                String::from_utf8_lossy(&perf_script_out.stderr).to_string();
                             let _ = record_run_log(
                                 &post_state,
                                 &post_run_id,
@@ -758,7 +793,11 @@ async fn register_worker(
                                     timestamp_ms: now_ms(),
                                     level: RunLogLevel::Warn,
                                     source: RunLogSource::Server,
-                                    message: format!("failed to run `perf script` on {}: {}", perf_path.display(), error_msg),
+                                    message: format!(
+                                        "failed to run `perf script` on {}: {}",
+                                        perf_path.display(),
+                                        error_msg
+                                    ),
                                 },
                             )
                             .await;
@@ -771,7 +810,11 @@ async fn register_worker(
                                     timestamp_ms: now_ms(),
                                     level: RunLogLevel::Warn,
                                     source: RunLogSource::Server,
-                                    message: format!("failed to spawn `perf script` on {}: {}", perf_path.display(), e),
+                                    message: format!(
+                                        "failed to spawn `perf script` on {}: {}",
+                                        perf_path.display(),
+                                        e
+                                    ),
                                 },
                             )
                             .await;
@@ -785,7 +828,10 @@ async fn register_worker(
                             timestamp_ms: now_ms(),
                             level: RunLogLevel::Info,
                             source: RunLogSource::Server,
-                            message: format!("perf data present at {} but flamegraph generation is disabled", perf_path.display()),
+                            message: format!(
+                                "perf data present at {} but flamegraph generation is disabled",
+                                perf_path.display()
+                            ),
                         },
                     )
                     .await;
@@ -855,7 +901,11 @@ async fn register_worker(
         }
     });
 
-    Ok(ActiveRun { stdin, tx, abort_tx })
+    Ok(ActiveRun {
+        stdin,
+        tx,
+        abort_tx,
+    })
 }
 
 async fn handle_worker_event(
@@ -1637,3 +1687,4 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
+

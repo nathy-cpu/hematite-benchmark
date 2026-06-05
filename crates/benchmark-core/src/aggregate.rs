@@ -77,6 +77,7 @@ pub struct RunAggregate {
     weighted_writes: f64,
     weighted_reads: f64,
     peak_rss_bytes: u64,
+    peak_total_rss_bytes: u64,
     peak_disk_usage_bytes: u64,
     io_precision: IoPrecision,
 }
@@ -88,6 +89,7 @@ impl RunAggregate {
         self.weighted_writes += sample.writes_per_sec * duration_secs;
         self.weighted_reads += sample.reads_per_sec * duration_secs;
         self.peak_rss_bytes = self.peak_rss_bytes.max(sample.rss_bytes);
+        self.peak_total_rss_bytes = self.peak_total_rss_bytes.max(sample.total_rss_bytes);
         self.peak_disk_usage_bytes = self.peak_disk_usage_bytes.max(sample.disk_usage_bytes);
         if sample.io_precision == IoPrecision::Approximate {
             self.io_precision = IoPrecision::Approximate;
@@ -112,6 +114,10 @@ impl RunAggregate {
 
     pub fn peak_rss_bytes(&self) -> u64 {
         self.peak_rss_bytes
+    }
+
+    pub fn peak_total_rss_bytes(&self) -> u64 {
+        self.peak_total_rss_bytes
     }
 
     pub fn peak_disk_usage_bytes(&self) -> u64 {
