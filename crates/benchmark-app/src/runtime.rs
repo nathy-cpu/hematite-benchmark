@@ -25,6 +25,11 @@ const MAX_ERROR_MESSAGES: usize = 8;
 /// Used by the sampler to subtract non-database I/O from disk write metrics.
 static STDOUT_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
+/// Baseline RSS captured at worker startup, before any engine is opened.
+/// Subtracted from current RSS to report only engine-caused memory growth.
+static BASELINE_RSS_ANON: AtomicU64 = AtomicU64::new(0);
+static BASELINE_RSS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Clone)]
 struct RuntimeControl {
     paused: Arc<AtomicBool>,
@@ -285,6 +290,12 @@ impl WorkerRuntime {
     }
 
     fn run(self) -> Result<()> {
+        // Capture baseline memory before opening any engine so we can report
+        // the delta (engine-only memory growth) instead of total process RSS.
+        let baseline = current_rss_info();
+        BASELINE_RSS_ANON.store(baseline.anon_bytes, Ordering::Relaxed);
+        BASELINE_RSS_TOTAL.store(baseline.total_bytes, Ordering::Relaxed);
+
         let started_at_ms = now_ms();
         emit_runtime_log(
             &self.run_id,
@@ -658,6 +669,12 @@ fn spawn_sampler(
             previous_io = current_io;
 
             let rss = current_rss_info();
+            let rss_delta_anon = rss
+                .anon_bytes
+                .saturating_sub(BASELINE_RSS_ANON.load(Ordering::Relaxed));
+            let rss_delta_total = rss
+                .total_bytes
+                .saturating_sub(BASELINE_RSS_TOTAL.load(Ordering::Relaxed));
             let sample = MetricSample {
                 timestamp_ms: now_ms(),
                 sample_duration_ms: sample_interval.as_millis() as u64,
@@ -667,8 +684,8 @@ fn spawn_sampler(
                 reads_per_sec: snapshot.reads as f64 / sample_interval.as_secs_f64(),
                 p50_latency_ms: snapshot.p50_latency_ms,
                 p95_latency_ms: snapshot.p95_latency_ms,
-                rss_bytes: rss.anon_bytes,
-                total_rss_bytes: rss.total_bytes,
+                rss_bytes: rss_delta_anon,
+                total_rss_bytes: rss_delta_total,
                 disk_read_bytes_per_sec,
                 disk_write_bytes_per_sec,
                 disk_usage_bytes: dir_size_bytes(&data_dir),
