@@ -107,7 +107,22 @@ pub fn current_io_counters() -> (Option<IoCounters>, IoPrecision) {
         }
     }
 
-    (None, IoPrecision::Approximate)
+    // Non-Linux fallback via sysinfo
+    let mut system = System::new();
+    let pid = Pid::from_u32(std::process::id());
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    if let Some(process) = system.process(pid) {
+        let disk = process.disk_usage();
+        (
+            Some(IoCounters {
+                read_bytes: disk.total_read_bytes,
+                write_bytes: disk.total_written_bytes,
+            }),
+            IoPrecision::Exact,
+        )
+    } else {
+        (None, IoPrecision::Approximate)
+    }
 }
 
 pub fn dir_size_bytes(path: &Path) -> u64 {
