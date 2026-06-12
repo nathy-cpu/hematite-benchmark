@@ -535,7 +535,7 @@ async fn register_worker(
      let stdout_state = state.clone();
     let stdout_run_id = run_id.clone();
     let stdout_tx = tx.clone();
-    let _stdout_task = tokio::spawn(async move {
+    let stdout_task = tokio::spawn(async move {
         let mut file = match OpenOptions::new()
             .create(true)
             .append(true)
@@ -626,6 +626,15 @@ async fn register_worker(
                     }
                 }
             }
+        }
+
+        // Wait for the stdout parser to finish processing all buffered worker
+        // events (including the final Finished event that writes summary.json).
+        // Without this, child.wait() can return before the stdout pipe is fully
+        // drained, causing a race where summary.json doesn't exist yet and the
+        // run gets incorrectly marked as Interrupted.
+        if let Err(e) = stdout_task.await {
+            error!(run_id = %post_run_id, "stdout processing task panicked: {e}");
         }
 
         // Post-run: scan the run directory for perf data files (and process each).
