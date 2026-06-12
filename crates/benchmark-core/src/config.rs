@@ -235,7 +235,7 @@ pub struct ScenarioConfig {
 impl Default for ScenarioConfig {
     fn default() -> Self {
         Self {
-            initial_rows: 5_000,
+            initial_rows: 3_000,
             payload_size_bytes: 256,
             category_count: 32,
             range_scan_size: 25,
@@ -255,7 +255,7 @@ pub struct LoadConfig {
 impl Default for LoadConfig {
     fn default() -> Self {
         Self {
-            concurrency: 4,
+            concurrency: 1,
             batch_size: 1,
             duration_secs: 30,
             sample_interval_ms: 1_000,

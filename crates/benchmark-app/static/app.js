@@ -41,10 +41,61 @@ const chartDefinitions = [
   },
 ];
 
-const durationPresets = {
-  quick: { value: 30, unit: "seconds", help: "Quick checks are good for validating setup and catching obvious regressions fast." },
-  benchmark: { value: 5, unit: "minutes", help: "Benchmark runs give enough time for graphs and averages to settle into a representative shape." },
-  stability: { value: 30, unit: "minutes", help: "Stability runs are for longer soak testing so you can watch drift, memory growth, and sustained I/O behavior." },
+const profilePresets = {
+  quick: {
+    value: 30,
+    unit: "seconds",
+    help: "Quick checks are good for validating setup and catching obvious regressions fast.",
+    initial_rows: 3000,
+    concurrency: 1,
+    payload_size_bytes: 256,
+    category_count: 10,
+    range_scan_size: 20,
+    batch_size: 1,
+    sample_interval_ms: 1000,
+    point_reads: 40,
+    range_scans: 10,
+    inserts: 20,
+    updates: 20,
+    deletes: 5,
+    aggregates: 5
+  },
+  benchmark: {
+    value: 5,
+    unit: "minutes",
+    help: "Benchmark runs give enough time for graphs and averages to settle into a representative shape.",
+    initial_rows: 10000,
+    concurrency: 1,
+    payload_size_bytes: 256,
+    category_count: 10,
+    range_scan_size: 20,
+    batch_size: 1,
+    sample_interval_ms: 1000,
+    point_reads: 80,
+    range_scans: 10,
+    inserts: 5,
+    updates: 5,
+    deletes: 0,
+    aggregates: 0
+  },
+  stability: {
+    value: 30,
+    unit: "minutes",
+    help: "Stability runs are for longer soak testing so you can watch drift, memory growth, and sustained I/O behavior.",
+    initial_rows: 50000,
+    concurrency: 1,
+    payload_size_bytes: 512,
+    category_count: 20,
+    range_scan_size: 50,
+    batch_size: 5,
+    sample_interval_ms: 2000,
+    point_reads: 30,
+    range_scans: 10,
+    inserts: 30,
+    updates: 20,
+    deletes: 5,
+    aggregates: 5
+  }
 };
 
 const routeMap = {
@@ -236,7 +287,7 @@ function humanizeDuration(seconds) {
 }
 
 function applyDurationPreset(presetKey) {
-  const preset = durationPresets[presetKey];
+  const preset = profilePresets[presetKey];
   if (!preset) {
     return;
   }
@@ -247,6 +298,21 @@ function applyDurationPreset(presetKey) {
   if (form.duration_unit) form.duration_unit.value = preset.unit;
   if (form.test_profile) form.test_profile.value = presetKey;
   
+  if (form.initial_rows) form.initial_rows.value = preset.initial_rows;
+  if (form.concurrency) form.concurrency.value = preset.concurrency;
+  if (form.payload_size_bytes) form.payload_size_bytes.value = preset.payload_size_bytes;
+  if (form.category_count) form.category_count.value = preset.category_count;
+  if (form.range_scan_size) form.range_scan_size.value = preset.range_scan_size;
+  if (form.batch_size) form.batch_size.value = preset.batch_size;
+  if (form.sample_interval_ms) form.sample_interval_ms.value = preset.sample_interval_ms;
+  
+  if (form.point_reads) form.point_reads.value = preset.point_reads;
+  if (form.range_scans) form.range_scans.value = preset.range_scans;
+  if (form.inserts) form.inserts.value = preset.inserts;
+  if (form.updates) form.updates.value = preset.updates;
+  if (form.deletes) form.deletes.value = preset.deletes;
+  if (form.aggregates) form.aggregates.value = preset.aggregates;
+
   const help = document.getElementById("duration-help");
   if (help) help.textContent = preset.help;
   
@@ -273,7 +339,21 @@ function setupDurationControls() {
   });
 
   ["input", "change"].forEach((eventName) => {
-    form?.addEventListener(eventName, () => renderSetupSummary());
+    form?.addEventListener(eventName, (event) => {
+      if (event.target && event.target.id !== "test-profile" && event.target.name !== "test_profile" && event.target.name) {
+        const formInputs = [
+          "duration_value", "duration_unit", "initial_rows", "payload_size_bytes",
+          "concurrency", "category_count", "range_scan_size", "batch_size",
+          "sample_interval_ms", "point_reads", "range_scans", "inserts",
+          "updates", "deletes", "aggregates"
+        ];
+        if (formInputs.includes(event.target.name)) {
+          const profile = document.getElementById("test-profile");
+          if (profile) profile.value = "custom";
+        }
+      }
+      renderSetupSummary();
+    });
   });
 
   applyDurationPreset("quick");
@@ -410,6 +490,24 @@ function renderSetupSummary() {
     </div>
   `;
 
+  const setupMixStatusEl = document.getElementById("setup-mix-status");
+  if (setupMixStatusEl) {
+    setupMixStatusEl.textContent = `${totalMix}%`;
+    if (totalMix === 100) {
+      setupMixStatusEl.className = "mix-validation-status is-valid";
+    } else {
+      setupMixStatusEl.className = "mix-validation-status is-invalid";
+    }
+  }
+
+  const submitBtn = form.querySelector("button[type='submit']");
+  if (submitBtn) {
+    const isInvalid = totalMix !== 100 || !!rampError;
+    submitBtn.disabled = isInvalid;
+    submitBtn.style.opacity = isInvalid ? "0.5" : "1";
+    submitBtn.style.pointerEvents = isInvalid ? "none" : "auto";
+  }
+
   const issues = [];
   if (rampError) {
     issues.push({ text: rampError, error: true });
@@ -499,6 +597,35 @@ function syncLiveControlsFromDetail(detail) {
   document.getElementById("live-update").value = load.mix.updates;
   document.getElementById("live-delete").value = load.mix.deletes;
   document.getElementById("live-aggregate").value = load.mix.aggregates;
+  updateLiveMixStatus();
+}
+
+function updateLiveMixStatus() {
+  const pointReads = Number(document.getElementById("live-point")?.value || 0);
+  const rangeScans = Number(document.getElementById("live-range")?.value || 0);
+  const inserts = Number(document.getElementById("live-insert")?.value || 0);
+  const updates = Number(document.getElementById("live-update")?.value || 0);
+  const deletes = Number(document.getElementById("live-delete")?.value || 0);
+  const aggregates = Number(document.getElementById("live-aggregate")?.value || 0);
+
+  const total = pointReads + rangeScans + inserts + updates + deletes + aggregates;
+  const statusEl = document.getElementById("live-mix-status");
+  const applyBtn = document.getElementById("apply-live-controls");
+
+  if (statusEl) {
+    statusEl.textContent = `${total}%`;
+    if (total === 100) {
+      statusEl.className = "mix-validation-status is-valid";
+    } else {
+      statusEl.className = "mix-validation-status is-invalid";
+    }
+  }
+
+  if (applyBtn) {
+    applyBtn.disabled = total !== 100;
+    applyBtn.style.opacity = total !== 100 ? "0.5" : "1";
+    applyBtn.style.pointerEvents = total !== 100 ? "none" : "auto";
+  }
 }
 
 function renderHistoryList() {
@@ -771,6 +898,171 @@ async function viewArtifact(runId, filename, label) {
   }
 }
 
+function renderHistoryComparisonTable(details) {
+  const container = document.getElementById("history-comparison-table-container");
+  if (!container) return;
+
+  if (details.length < 2) {
+    container.innerHTML = "";
+    return;
+  }
+
+  // Find max values for writes/s and reads/s to highlight the winner!
+  let maxWrites = 0;
+  let maxReads = 0;
+  details.forEach(({ run, detail }) => {
+    const summary = run.summary || detail.summary;
+    if (summary) {
+      if (summary.avg_writes_per_sec > maxWrites) maxWrites = summary.avg_writes_per_sec;
+      if (summary.avg_reads_per_sec > maxReads) maxReads = summary.avg_reads_per_sec;
+    }
+  });
+
+  let html = `
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          ${details.map(({ run }) => `
+            <th>
+              <div class="comp-th-title">${escapeHtml(run.run_name)}</div>
+              <div class="comp-th-subtitle">${run.engine}</div>
+            </th>
+          `).join("")}
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Status</td>
+          ${details.map(({ run }) => `<td><span class="${statusPillClass(run.status)}">${run.status}</span></td>`).join("")}
+        </tr>
+        <tr>
+          <td>Avg Writes/s</td>
+          ${details.map(({ run, detail }) => {
+            const summary = run.summary || detail.summary;
+            if (!summary) return "<td>n/a</td>";
+            const val = summary.avg_writes_per_sec;
+            const isWinner = val === maxWrites && val > 0;
+            return `<td class="${isWinner ? "winner-cell" : ""}">${formatOpsPerSecond(val)} ${isWinner ? "🏆" : ""}</td>`;
+          }).join("")}
+        </tr>
+        <tr>
+          <td>Avg Reads/s</td>
+          ${details.map(({ run, detail }) => {
+            const summary = run.summary || detail.summary;
+            if (!summary) return "<td>n/a</td>";
+            const val = summary.avg_reads_per_sec;
+            const isWinner = val === maxReads && val > 0;
+            return `<td class="${isWinner ? "winner-cell" : ""}">${formatOpsPerSecond(val)} ${isWinner ? "🏆" : ""}</td>`;
+          }).join("")}
+        </tr>
+        <tr>
+          <td>P95 Latency</td>
+          ${details.map(({ detail }) => {
+            const avgP95 = computeStats(detail.samples || [], "p95_latency_ms");
+            return `<td>${avgP95 ? formatLatencyMs(avgP95.average) : "n/a"}</td>`;
+          }).join("")}
+        </tr>
+        <tr>
+          <td>Peak RSS Memory</td>
+          ${details.map(({ run, detail }) => {
+            const summary = run.summary || detail.summary;
+            return `<td>${summary ? formatBytes(summary.peak_rss_bytes) : "n/a"}</td>`;
+          }).join("")}
+        </tr>
+        <tr>
+          <td>Peak Disk Space</td>
+          ${details.map(({ run, detail }) => {
+            const summary = run.summary || detail.summary;
+            return `<td>${summary ? formatBytes(summary.peak_disk_usage_bytes) : "n/a"}</td>`;
+          }).join("")}
+        </tr>
+        <tr>
+          <td>Errors</td>
+          ${details.map(({ detail }) => {
+            const totalErrors = totalSampleErrors(detail.samples || []);
+            return `<td>${formatInteger(totalErrors)}</td>`;
+          }).join("")}
+        </tr>
+        <tr>
+          <td>Concurrency</td>
+          ${details.map(({ detail }) => {
+            const effectiveConfig = detail.effective_config || detail.config;
+            return `<td>${formatInteger(effectiveConfig?.load?.concurrency || 0)}</td>`;
+          }).join("")}
+        </tr>
+      </tbody>
+    </table>
+  `;
+
+  container.innerHTML = html;
+}
+
+function startEditRunName(runId) {
+  state.editingRunId = runId;
+  renderHistorySummary();
+}
+
+function cancelEditRunName() {
+  state.editingRunId = null;
+  renderHistorySummary();
+}
+
+async function saveRunName(runId) {
+  const input = document.getElementById(`edit-name-input-${runId}`);
+  if (!input) return;
+  const newName = input.value.trim();
+  if (!newName) {
+    alert("Run name cannot be empty.");
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/runs/${runId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_name: newName }),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    state.editingRunId = null;
+    await refreshRuns();
+    renderHistorySummary();
+  } catch (e) {
+    alert(`Failed to save run name: ${e.message}`);
+  }
+}
+
+async function confirmDeleteRun(runId, runName) {
+  if (!confirm(`Are you sure you want to permanently delete run "${runName}"? This will delete all its logs and artifacts from disk.`)) {
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/runs/${runId}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    state.historySelection.delete(runId);
+    if (state.activeRunId === runId) {
+      state.activeRunId = "";
+    }
+    state.editingRunId = null;
+    await refreshRuns();
+    renderHistorySummary();
+  } catch (e) {
+    alert(`Failed to delete run: ${e.message}`);
+  }
+}
+
+window.startEditRunName = startEditRunName;
+window.cancelEditRunName = cancelEditRunName;
+window.saveRunName = saveRunName;
+window.confirmDeleteRun = confirmDeleteRun;
+
 function renderHistorySummary() {
   const container = document.getElementById("history-summary");
   const details = [...state.historySelection]
@@ -779,8 +1071,13 @@ function renderHistorySummary() {
 
   if (!details.length) {
     container.innerHTML = '<div class="empty-state">Select one or more past runs to compare their summaries and charts.</div>';
+    const compTableContainer = document.getElementById("history-comparison-table-container");
+    if (compTableContainer) compTableContainer.innerHTML = "";
     return;
   }
+
+  // Render the side-by-side comparison table
+  renderHistoryComparisonTable(details);
 
   container.innerHTML = details.map(({ run, detail }) => {
     const summary = run.summary || detail.summary;
@@ -790,11 +1087,29 @@ function renderHistorySummary() {
     const logs = detail.logs || summary?.recent_logs || [];
     const latestLog = logs.at(-1);
     const logCount = summary?.log_count || logs.length;
+    const isEditing = state.editingRunId === run.run_id;
+
     return `
       <div class="summary-card">
-        <span>${run.run_name} • ${run.engine}</span>
-        <strong>${summary ? formatOpsPerSecond(summary.avg_writes_per_sec) : "No summary yet"}</strong>
-        <div class="run-meta">avg writes/s</div>
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; margin-bottom: 12px;">
+          ${isEditing ? `
+            <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
+              <input type="text" id="edit-name-input-${run.run_id}" value="${escapeHtml(run.run_name)}" style="padding: 4px 8px; font-size: 0.9rem; flex: 1; min-width: 0;" />
+              <button class="small-btn" onclick="saveRunName('${run.run_id}')">Save</button>
+              <button class="ghost small-btn" onclick="cancelEditRunName()">Cancel</button>
+            </div>
+          ` : `
+            <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1;">
+              <span>${escapeHtml(run.run_name)} • ${run.engine}</span>
+              <strong>${summary ? formatOpsPerSecond(summary.avg_writes_per_sec) : "No summary yet"}</strong>
+              <div class="run-meta">avg writes/s</div>
+            </div>
+            <div class="run-actions-row" style="display: flex; gap: 6px; margin-left: 8px;">
+              <button class="ghost small-btn" onclick="startEditRunName('${run.run_id}')">Rename</button>
+              <button class="danger small-btn" onclick="confirmDeleteRun('${run.run_id}', '${escapeHtml(run.run_name)}')">Delete</button>
+            </div>
+          `}
+        </div>
         <span class="${statusPillClass(run.status)}">${run.status}</span>
         <div class="metric-grid full">
           <div><span>Avg reads</span><strong>${summary ? formatOpsPerSecond(summary.avg_reads_per_sec) : "n/a"}</strong></div>
@@ -829,7 +1144,7 @@ function renderHistorySummary() {
           }
           if (parts.length) {
             return `
-                <div class="panel inset-panel">
+                <div class="panel inset-panel" style="margin-top: 16px;">
                   <div class="section-head compact">
                     <div>
                       <p class="section-kicker">Artifacts</p>
@@ -863,7 +1178,10 @@ function renderDashboardLogs() {
   const detail = state.runDetails.get(state.activeRunId);
   const logs = detail?.logs || detail?.summary?.recent_logs || [];
   
-  if (!logs.length) {
+  const clearedTs = state.clearedLogsTimestamp || 0;
+  const activeLogs = logs.filter(log => log.timestamp_ms > clearedTs);
+
+  if (!activeLogs.length) {
     container.innerHTML = '<div class="empty-state">No run events yet.</div>';
     return;
   }
@@ -871,7 +1189,7 @@ function renderDashboardLogs() {
   const searchTerm = document.getElementById("log-search-input")?.value.toLowerCase() || "";
   const levelFilter = document.getElementById("log-level-filter")?.value || "all";
 
-  const filteredLogs = logs.filter(log => {
+  const filteredLogs = activeLogs.filter(log => {
     const matchesSearch = log.message.toLowerCase().includes(searchTerm);
     const matchesLevel = levelFilter === "all" || log.level.toLowerCase() === levelFilter;
     return matchesSearch && matchesLevel;
@@ -890,8 +1208,11 @@ function renderDashboardLogs() {
     </div>
   `).join("");
   
-  // Auto-scroll to bottom if at bottom
-  container.scrollTop = container.scrollHeight;
+  // Auto-scroll to bottom if freeze is not checked
+  const freezeCheckbox = document.getElementById("freeze-logs-checkbox");
+  if (!freezeCheckbox || !freezeCheckbox.checked) {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 function renderHistoryCharts() {
@@ -1339,6 +1660,16 @@ function setupControls() {
     } catch (error) {
       alert("Failed to apply profiling settings: " + (error.message || error));
     }
+  });
+
+  const liveMixInputs = ["live-point", "live-range", "live-insert", "live-update", "live-delete", "live-aggregate"];
+  liveMixInputs.forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", updateLiveMixStatus);
+  });
+
+  document.getElementById("clear-logs-btn")?.addEventListener("click", () => {
+    state.clearedLogsTimestamp = Date.now();
+    renderDashboardLogs();
   });
 }
 

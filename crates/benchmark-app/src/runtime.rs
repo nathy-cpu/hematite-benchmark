@@ -1,5 +1,5 @@
 use crate::engine::{EngineAdapter, execute_operation, logical_bytes_for_operation, open_engine};
-use crate::metrics::{IoCounters, current_io_counters, current_rss_info, dir_size_bytes};
+use crate::metrics::{IoCounters, current_io_counters, current_rss_info, db_file_size_bytes};
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
     AppliedControlEvent, ArtifactPaths, BenchmarkConfig, ControlMessage, ControlSource, EngineKind,
@@ -39,6 +39,8 @@ struct RuntimeControl {
     mix: Arc<Mutex<OperationMix>>,
     effective_config: Arc<Mutex<BenchmarkConfig>>,
     control_events: Arc<Mutex<Vec<AppliedControlEvent>>>,
+    condvar: Arc<std::sync::Condvar>,
+    lock: Arc<Mutex<()>>,
 }
 
 impl RuntimeControl {
@@ -51,6 +53,8 @@ impl RuntimeControl {
             mix: Arc::new(Mutex::new(initial_config.load.mix.clone())),
             effective_config: Arc::new(Mutex::new(initial_config)),
             control_events: Arc::new(Mutex::new(Vec::new())),
+            condvar: Arc::new(std::sync::Condvar::new()),
+            lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -59,7 +63,7 @@ impl RuntimeControl {
         message: ControlMessage,
         source: ControlSource,
     ) -> Result<Option<(AppliedControlEvent, BenchmarkConfig)>> {
-        match &message {
+        let res = match &message {
             ControlMessage::Pause => {
                 self.paused.store(true, Ordering::Relaxed);
                 Ok(None)
@@ -142,7 +146,9 @@ impl RuntimeControl {
                     effective_config.clone(),
                 )))
             }
-        }
+        };
+        self.condvar.notify_all();
+        res
     }
 
     fn current_mix(&self) -> OperationMix {
@@ -374,6 +380,7 @@ impl WorkerRuntime {
             thread::sleep(Duration::from_millis(100));
         }
         control.stop.store(true, Ordering::Relaxed);
+        control.condvar.notify_all();
 
         scheduler.join().expect("scheduler panicked");
         for handle in workers {
@@ -417,7 +424,7 @@ impl WorkerRuntime {
             avg_writes_per_sec: aggregate.avg_writes_per_sec(),
             avg_reads_per_sec: aggregate.avg_reads_per_sec(),
             peak_rss_bytes: aggregate.peak_rss_bytes(),
-            peak_disk_usage_bytes: aggregate.peak_disk_usage_bytes(),
+            peak_disk_usage_bytes: aggregate.peak_disk_usage_bytes().max(db_file_size_bytes(&self.data_dir, self.config.engine)),
             log_count: 0,
             recent_logs: Vec::new(),
         };
@@ -562,7 +569,13 @@ fn worker_loop(
         if control.paused.load(Ordering::Relaxed)
             || index >= control.concurrency.load(Ordering::Relaxed)
         {
-            thread::sleep(Duration::from_millis(20));
+            let mut state_lock = control.lock.lock().unwrap();
+            while (control.paused.load(Ordering::Relaxed)
+                || index >= control.concurrency.load(Ordering::Relaxed))
+                && !control.stop.load(Ordering::Relaxed)
+            {
+                state_lock = control.condvar.wait(state_lock).unwrap();
+            }
             continue;
         }
 
@@ -627,6 +640,29 @@ fn spawn_sampler(
         let mut previous_stdout_bytes: u64 = STDOUT_BYTES_WRITTEN.load(Ordering::Relaxed);
         let mut last_sample_at = Instant::now();
 
+        let disk_usage = Arc::new(AtomicU64::new(db_file_size_bytes(&data_dir, config.engine)));
+        {
+            let disk_usage = disk_usage.clone();
+            let data_dir = data_dir.clone();
+            let control = control.clone();
+            let engine = config.engine;
+            thread::spawn(move || {
+                while !control.stop.load(Ordering::Relaxed) {
+                    let size = db_file_size_bytes(&data_dir, engine);
+                    disk_usage.store(size, Ordering::Relaxed);
+                    for _ in 0..50 {
+                        if control.stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                // Final check on exit
+                let size = db_file_size_bytes(&data_dir, engine);
+                disk_usage.store(size, Ordering::Relaxed);
+            });
+        }
+
         loop {
             let elapsed = wait_for_sample_tick(last_sample_at, target_interval, &control);
             let snapshot = accumulator
@@ -689,7 +725,7 @@ fn spawn_sampler(
                 total_rss_bytes: rss_delta_total,
                 disk_read_bytes_per_sec,
                 disk_write_bytes_per_sec,
-                disk_usage_bytes: dir_size_bytes(&data_dir),
+                disk_usage_bytes: disk_usage.load(Ordering::Relaxed),
                 error_count: snapshot.errors,
                 io_precision,
             };

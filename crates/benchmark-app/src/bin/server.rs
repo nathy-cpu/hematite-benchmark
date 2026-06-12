@@ -4,12 +4,14 @@ use std::env;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (verbosity, options) = parse_args(env::args().skip(1))?;
-    benchmark_app::server::run_server_with_verbosity(verbosity, options).await
+    let (verbosity, options, port) = parse_args(env::args().skip(1))?;
+    benchmark_app::server::run_server_with_options(verbosity, options, port).await
 }
-fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(ServerVerbosity, ServerOptions)> {
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(ServerVerbosity, ServerOptions, u16)> {
     let mut verbosity = ServerVerbosity::default();
     let mut options = ServerOptions::default();
+    let mut port = 3000;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -35,6 +37,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(ServerVerbosity
                         ));
                     }
                 };
+            }
+            "--port" | "-p" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--port requires a value"))?;
+                port = value.parse::<u16>().map_err(|e| {
+                    anyhow::anyhow!("invalid port value '{value}': {e}")
+                })?;
             }
             "--perf" => {
                 options.worker_perf = true;
@@ -65,5 +75,5 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(ServerVerbosity
             _ => {}
         }
     }
-    Ok((verbosity, options))
+    Ok((verbosity, options, port))
 }

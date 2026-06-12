@@ -1,14 +1,30 @@
 use crate::{IoPrecision, MetricSample};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct SampleAccumulator {
     pub reads: u64,
     pub writes: u64,
     pub errors: u64,
     pub logical_read_bytes: u64,
     pub logical_write_bytes: u64,
-    pub latencies_micros: Vec<u64>,
+    pub latencies: hdrhistogram::Histogram<u64>,
+}
+
+impl Default for SampleAccumulator {
+    fn default() -> Self {
+        let mut latencies = hdrhistogram::Histogram::new_with_bounds(1, 10_000_000, 3)
+            .expect("failed to create latency histogram");
+        latencies.auto(true);
+        Self {
+            reads: 0,
+            writes: 0,
+            errors: 0,
+            logical_read_bytes: 0,
+            logical_write_bytes: 0,
+            latencies,
+        }
+    }
 }
 
 impl SampleAccumulator {
@@ -26,7 +42,7 @@ impl SampleAccumulator {
         }
         self.logical_read_bytes += logical_read_bytes;
         self.logical_write_bytes += logical_write_bytes;
-        self.latencies_micros.push(latency_micros);
+        let _ = self.latencies.record(latency_micros.max(1));
     }
 
     pub fn record_error(&mut self) {
@@ -34,11 +50,8 @@ impl SampleAccumulator {
     }
 
     pub fn snapshot_and_reset(&mut self) -> SampleSnapshot {
-        let mut latencies = std::mem::take(&mut self.latencies_micros);
-        latencies.sort_unstable();
-
-        let p50 = percentile(&latencies, 50);
-        let p95 = percentile(&latencies, 95);
+        let p50 = self.latencies.value_at_quantile(0.50);
+        let p95 = self.latencies.value_at_quantile(0.95);
 
         let snapshot = SampleSnapshot {
             reads: self.reads,
@@ -55,6 +68,7 @@ impl SampleAccumulator {
         self.errors = 0;
         self.logical_read_bytes = 0;
         self.logical_write_bytes = 0;
+        self.latencies.reset();
 
         snapshot
     }
@@ -129,13 +143,6 @@ impl RunAggregate {
     }
 }
 
-fn percentile(sorted: &[u64], pct: usize) -> u64 {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let idx = ((sorted.len() - 1) * pct) / 100;
-    sorted[idx]
-}
 
 fn micros_to_ms(value: u64) -> f64 {
     value as f64 / 1_000.0
@@ -158,6 +165,6 @@ mod tests {
         assert_eq!(snapshot.writes, 1);
         assert_eq!(snapshot.errors, 1);
         assert_eq!(accumulator.reads, 0);
-        assert!(accumulator.latencies_micros.is_empty());
+        assert_eq!(accumulator.latencies.len(), 0);
     }
 }

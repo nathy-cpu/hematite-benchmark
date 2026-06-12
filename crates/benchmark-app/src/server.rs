@@ -116,12 +116,20 @@ struct SpawnedWorker {
 }
 
 pub async fn run_server() -> Result<()> {
-    run_server_with_verbosity(ServerVerbosity::default(), ServerOptions::default()).await
+    run_server_with_options(ServerVerbosity::default(), ServerOptions::default(), 3000).await
 }
 
 pub async fn run_server_with_verbosity(
     verbosity: ServerVerbosity,
     options: ServerOptions,
+) -> Result<()> {
+    run_server_with_options(verbosity, options, 3000).await
+}
+
+pub async fn run_server_with_options(
+    verbosity: ServerVerbosity,
+    options: ServerOptions,
+    port: u16,
 ) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -147,14 +155,17 @@ pub async fn run_server_with_verbosity(
         .route("/styles.css", get(styles_css))
         .route("/api/runs", get(list_runs).post(start_run))
         .route("/api/options", get(get_options).post(set_options))
-        .route("/api/runs/{run_id}", get(get_run))
+        .route(
+            "/api/runs/{run_id}",
+            get(get_run).post(edit_run).delete(delete_run),
+        )
         .route("/api/runs/{run_id}/control", post(control_run))
         .route("/api/runs/{run_id}/stream", get(stream_run))
         .route("/api/runs/{run_id}/artifact", get(get_artifact))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 3001)).await?;
-    info!("benchmark dashboard listening on http://127.0.0.1:3000");
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    info!("benchmark dashboard listening on http://127.0.0.1:{}", port);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -269,6 +280,63 @@ async fn get_run(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct EditRunRequest {
+    run_name: String,
+}
+
+async fn edit_run(
+    Path(run_id): Path<String>,
+    State(state): State<AppState>,
+    Json(payload): Json<EditRunRequest>,
+) -> Result<StatusCode, ApiError> {
+    let mut runs = state.runs.write().await;
+    let run = runs
+        .get_mut(&run_id)
+        .ok_or_else(|| ApiError::not_found("run not found"))?;
+
+    run.config.run_name = payload.run_name.clone();
+    run.effective_config.run_name = payload.run_name.clone();
+
+    // Write updated config.json
+    let config_path = run.run_dir.join("config.json");
+    let config_bytes = serde_json::to_vec_pretty(&run.config)?;
+    fs::write(&config_path, &config_bytes).await?;
+
+    // If summary exists, update and write summary.json
+    if let Some(ref mut summary) = run.summary {
+        summary.config.run_name = payload.run_name.clone();
+        summary.final_config.run_name = payload.run_name.clone();
+
+        let summary_path = run.run_dir.join("summary.json");
+        let summary_bytes = serde_json::to_vec_pretty(summary)?;
+        fs::write(&summary_path, &summary_bytes).await?;
+    }
+
+    Ok(StatusCode::OK)
+}
+
+async fn delete_run(
+    Path(run_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<StatusCode, ApiError> {
+    let mut runs = state.runs.write().await;
+    let run = runs
+        .remove(&run_id)
+        .ok_or_else(|| ApiError::not_found("run not found"))?;
+
+    // Attempt to remove run directory asynchronously
+    if let Err(e) = fs::remove_dir_all(&run.run_dir).await {
+        tracing::warn!(
+            "Failed to delete run directory on disk for {}: {}",
+            run_id,
+            e
+        );
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn start_run(
     State(state): State<AppState>,
     Json(config): Json<BenchmarkConfig>,
@@ -332,6 +400,7 @@ async fn start_run(
     .await?;
 
     let opts = state.options.read().await.clone();
+    let _ = check_profiling_permissions(&state, &run_id, &opts, &config).await;
     let spawned = match spawn_worker_process(&run_id, &run_dir, &config_path, opts, &config).await {
         Ok(child) => child,
         Err(error) => {
@@ -890,6 +959,25 @@ async fn register_worker(
                     }
                 }
             }
+        } else {
+            // No summary.json — the worker exited without sending a Finished event.
+            // Generate a fallback summary from collected metrics so that History
+            // cards show peak disk/RSS instead of "n/a".
+            let has_summary = {
+                let runs = post_state.runs.read().await;
+                runs.get(&post_run_id)
+                    .map(|r| r.summary.is_some())
+                    .unwrap_or(false)
+            };
+            if !has_summary {
+                let _ = finalize_failed_run(
+                    &post_state,
+                    &post_run_id,
+                    "Worker exited without sending a summary".to_string(),
+                    RunStatus::Interrupted,
+                )
+                .await;
+            }
         }
 
         let mut runs = post_state.runs.write().await;
@@ -1079,9 +1167,98 @@ async fn handle_worker_event(
                 },
             )
             .await?;
-            finalize_failed_run(state, run_id, message).await?;
+            finalize_failed_run(state, run_id, message, RunStatus::Failed).await?;
         }
     }
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+async fn check_profiling_permissions(
+    state: &AppState,
+    run_id: &str,
+    opts: &ServerOptions,
+    config: &BenchmarkConfig,
+) -> Result<()> {
+    let mut perf_requested = opts.worker_perf;
+    let mut strace_requested = opts.worker_strace;
+    if let Some(prof) = &config.profiling {
+        if let Some(val) = prof.worker_perf {
+            perf_requested = val;
+        }
+        if let Some(val) = prof.worker_strace {
+            strace_requested = val;
+        }
+    }
+
+    if perf_requested {
+        if let Ok(content) = tokio::fs::read_to_string("/proc/sys/kernel/perf_event_paranoid").await
+        {
+            if let Ok(val) = content.trim().parse::<i32>() {
+                if val > 1 {
+                    let msg = format!(
+                        "PRE-FLIGHT WARNING: /proc/sys/kernel/perf_event_paranoid is set to {val}. \
+                         perf record might fail or yield no samples. \
+                         To enable unprivileged profiling, run: sudo sysctl kernel.perf_event_paranoid=1"
+                    );
+                    let _ = record_run_log(
+                        state,
+                        run_id,
+                        RunLogEntry {
+                            timestamp_ms: now_ms(),
+                            level: RunLogLevel::Warn,
+                            source: RunLogSource::Server,
+                            message: msg.clone(),
+                        },
+                    )
+                    .await;
+                    let mut runs = state.runs.write().await;
+                    if let Some(run) = runs.get_mut(run_id) {
+                        run.warnings.push(msg);
+                    }
+                }
+            }
+        }
+    }
+
+    if strace_requested {
+        if let Ok(content) = tokio::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").await {
+            if let Ok(val) = content.trim().parse::<i32>() {
+                if val > 0 {
+                    let msg = format!(
+                        "PRE-FLIGHT WARNING: /proc/sys/kernel/yama/ptrace_scope is set to {val}. \
+                         strace might fail or require additional privileges. \
+                         To enable tracing, run: sudo sysctl kernel.yama.ptrace_scope=0"
+                    );
+                    let _ = record_run_log(
+                        state,
+                        run_id,
+                        RunLogEntry {
+                            timestamp_ms: now_ms(),
+                            level: RunLogLevel::Warn,
+                            source: RunLogSource::Server,
+                            message: msg.clone(),
+                        },
+                    )
+                    .await;
+                    let mut runs = state.runs.write().await;
+                    if let Some(run) = runs.get_mut(run_id) {
+                        run.warnings.push(msg);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn check_profiling_permissions(
+    _state: &AppState,
+    _run_id: &str,
+    _opts: &ServerOptions,
+    _config: &BenchmarkConfig,
+) -> Result<()> {
     Ok(())
 }
 
@@ -1093,7 +1270,16 @@ async fn spawn_worker_process(
     config: &BenchmarkConfig,
 ) -> Result<SpawnedWorker, ApiError> {
     let current_exe = std::env::current_exe()?;
-    let worker_binary = current_exe.with_file_name(worker_binary_name());
+    let mut worker_binary = current_exe.with_file_name(worker_binary_name());
+
+    if current_exe.to_string_lossy().contains("/debug/") {
+        if let Some(parent) = current_exe.parent().and_then(|p| p.parent()) {
+            let release_bin = parent.join("release").join(worker_binary_name());
+            if release_bin.exists() {
+                worker_binary = release_bin;
+            }
+        }
+    }
 
     // Build the invocation vector (program + args).
     let mut invocation: Vec<String> = Vec::new();
@@ -1103,6 +1289,7 @@ async fn spawn_worker_process(
     } else {
         invocation.push("cargo".to_string());
         invocation.push("run".to_string());
+        invocation.push("--release".to_string());
         invocation.push("--quiet".to_string());
         invocation.push("-p".to_string());
         invocation.push("benchmark-app".to_string());
@@ -1539,7 +1726,12 @@ fn describe_control_event(config: &BenchmarkConfig) -> String {
     )
 }
 
-async fn finalize_failed_run(state: &AppState, run_id: &str, message: String) -> Result<()> {
+async fn finalize_failed_run(
+    state: &AppState,
+    run_id: &str,
+    message: String,
+    status: RunStatus,
+) -> Result<()> {
     let (
         run_dir,
         config,
@@ -1565,7 +1757,7 @@ async fn finalize_failed_run(state: &AppState, run_id: &str, message: String) ->
         {
             run.error_messages.push(message.clone());
         }
-        run.status = RunStatus::Failed;
+        run.status = status.clone();
         run.active = None;
         let ended_at_ms = *run.ended_at_ms.get_or_insert_with(now_ms);
         (
@@ -1598,7 +1790,7 @@ async fn finalize_failed_run(state: &AppState, run_id: &str, message: String) ->
         final_config: effective_config,
         started_at_ms,
         ended_at_ms,
-        status: RunStatus::Failed,
+        status: status.clone(),
         warnings,
         error_messages,
         control_events,
@@ -1617,7 +1809,7 @@ async fn finalize_failed_run(state: &AppState, run_id: &str, message: String) ->
     if let Some(run) = runs.get_mut(run_id) {
         run.summary = Some(summary);
         run.ended_at_ms = Some(ended_at_ms);
-        run.status = RunStatus::Failed;
+        run.status = status;
         run.active = None;
     }
     Ok(())
@@ -1687,4 +1879,3 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
-

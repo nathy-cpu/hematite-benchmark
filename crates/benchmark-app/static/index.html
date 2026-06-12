@@ -161,22 +161,25 @@
               </div>
 
               <div class="grid three">
-                <div class="field"><label>Initial Rows</label><input type="number" name="initial_rows" value="5000" /></div>
+                <div class="field"><label>Initial Rows</label><input type="number" name="initial_rows" value="3000" /></div>
                 <div class="field"><label>Payload Size (B)</label><input type="number" name="payload_size_bytes" value="256" /></div>
-                <div class="field"><label>Concurrency</label><input type="number" name="concurrency" value="4" /></div>
+                <div class="field"><label>Concurrency</label><input type="number" name="concurrency" value="1" /></div>
                 <div class="field"><label>Category Count</label><input type="number" name="category_count" value="10" /></div>
                 <div class="field"><label>Range Scan Size</label><input type="number" name="range_scan_size" value="20" /></div>
                 <div class="field"><label>Batch Size</label><input type="number" name="batch_size" value="1" /></div>
                 <div class="field"><label>Sample Interval (ms)</label><input type="number" name="sample_interval_ms" value="1000" /></div>
               </div>
 
-              <div class="mix-grid">
-                <div class="field"><label>Reads %</label><input type="number" name="point_reads" value="40" /></div>
-                <div class="field"><label>Scans %</label><input type="number" name="range_scans" value="10" /></div>
-                <div class="field"><label>Inserts %</label><input type="number" name="inserts" value="20" /></div>
-                <div class="field"><label>Updates %</label><input type="number" name="updates" value="20" /></div>
-                <div class="field"><label>Deletes %</label><input type="number" name="deletes" value="5" /></div>
-                <div class="field"><label>Aggs %</label><input type="number" name="aggregates" value="5" /></div>
+              <div class="panel inset-panel">
+                <h3>Workload Mix <span id="setup-mix-status" class="mix-validation-status">100%</span></h3>
+                <div class="mix-grid">
+                  <div class="field"><label>Reads %</label><input type="number" name="point_reads" value="40" /></div>
+                  <div class="field"><label>Scans %</label><input type="number" name="range_scans" value="10" /></div>
+                  <div class="field"><label>Inserts %</label><input type="number" name="inserts" value="20" /></div>
+                  <div class="field"><label>Updates %</label><input type="number" name="updates" value="20" /></div>
+                  <div class="field"><label>Deletes %</label><input type="number" name="deletes" value="5" /></div>
+                  <div class="field"><label>Aggs %</label><input type="number" name="aggregates" value="5" /></div>
+                </div>
               </div>
 
               <div class="field">
@@ -311,6 +314,10 @@
                     <option value="warn">Warning</option>
                     <option value="error">Error</option>
                   </select>
+                  <label style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; cursor: pointer; user-select: none; color: var(--text-dim); margin-left: 8px;">
+                    <input type="checkbox" id="freeze-logs-checkbox" /> Freeze Scroll
+                  </label>
+                  <button id="clear-logs-btn" class="ghost small-btn" style="margin-left: auto;">Clear View</button>
                 </div>
                 <div id="dashboard-logs" class="log-viewport"></div>
               </div>
@@ -321,12 +328,12 @@
                 <div class="panel span-6">
                   <h3>Live Concurrency</h3>
                   <div class="field">
-                    <input id="live-concurrency" type="range" min="1" max="32" value="4" />
-                    <div class="inline-metric">Target: <strong id="live-concurrency-value">4</strong></div>
+                    <input id="live-concurrency" type="range" min="1" max="32" value="1" />
+                    <div class="inline-metric">Target: <strong id="live-concurrency-value">1</strong></div>
                   </div>
                 </div>
                 <div class="panel span-6">
-                  <h3>Live Workload Mix</h3>
+                  <h3>Live Workload Mix <span id="live-mix-status" class="mix-validation-status">100%</span></h3>
                   <div class="mix-grid">
                     <div class="field"><label>Reads %</label><input id="live-point" type="number" value="40" /></div>
                     <div class="field"><label>Scans %</label><input id="live-range" type="number" value="10" /></div>
@@ -370,6 +377,7 @@
             </div>
 
             <div class="tab-content" id="tab-comparison">
+              <div id="history-comparison-table-container"></div>
               <div id="history-summary" class="artifact-grid"></div>
             </div>
 

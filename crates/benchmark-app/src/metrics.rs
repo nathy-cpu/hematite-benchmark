@@ -1,4 +1,4 @@
-use benchmark_core::IoPrecision;
+use benchmark_core::{EngineKind, IoPrecision};
 use std::fs;
 use std::path::Path;
 use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -46,7 +46,7 @@ pub fn current_rss_info() -> RssInfo {
         if let Ok(contents) = fs::read_to_string("/proc/self/statm") {
             if let Some(rss_pages) = contents.split_whitespace().nth(1) {
                 if let Ok(pages) = rss_pages.parse::<u64>() {
-                    let total = pages * 4096;
+                    let total = pages * get_page_size();
                     return RssInfo {
                         anon_bytes: total,
                         total_bytes: total,
@@ -67,6 +67,18 @@ pub fn current_rss_info() -> RssInfo {
     RssInfo {
         anon_bytes: total,
         total_bytes: total,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn get_page_size() -> u64 {
+    unsafe {
+        let val = libc::sysconf(libc::_SC_PAGESIZE);
+        if val > 0 {
+            val as u64
+        } else {
+            4096
+        }
     }
 }
 
@@ -118,7 +130,7 @@ pub fn current_io_counters() -> (Option<IoCounters>, IoPrecision) {
                 read_bytes: disk.total_read_bytes,
                 write_bytes: disk.total_written_bytes,
             }),
-            IoPrecision::Exact,
+            IoPrecision::Approximate,
         )
     } else {
         (None, IoPrecision::Approximate)
@@ -133,4 +145,21 @@ pub fn dir_size_bytes(path: &Path) -> u64 {
         .filter(|metadata| metadata.is_file())
         .map(|metadata| metadata.len())
         .sum()
+}
+
+/// Returns the size of the actual database file (not WAL/journal auxiliaries).
+///
+/// During active benchmark runs the WAL and journal files can grow to hundreds
+/// of megabytes, inflating the "disk usage" metric far beyond the true database
+/// footprint.  This function reports only the main database file size.
+pub fn db_file_size_bytes(data_dir: &Path, engine: EngineKind) -> u64 {
+    let db_filename = match engine {
+        EngineKind::Sqlite => "sqlite.db",
+        EngineKind::Hematite => "hematite.db",
+    };
+    let db_path = data_dir.join(db_filename);
+    db_path
+        .metadata()
+        .map(|m| m.len())
+        .unwrap_or(0)
 }

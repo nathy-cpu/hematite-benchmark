@@ -133,23 +133,32 @@ impl EngineAdapter for SqliteAdapter {
         "#;
         self.conn.execute_batch(schema)?;
 
-        let tx = self.conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for id in 1..=config.scenario.initial_rows {
-                let row = make_row(config, id);
-                stmt.execute(params![
-                    row.id as i64,
-                    row.category,
-                    row.score,
-                    row.payload,
-                    row.updated_at
-                ])?;
+        // Seed in batches to keep memory usage bounded. A single transaction
+        // over tens of thousands of rows would hold all dirty pages in memory
+        // until commit, which can crash the machine on large initial_rows.
+        const SEED_BATCH_SIZE: u64 = 500;
+        let mut id = 1u64;
+        while id <= config.scenario.initial_rows {
+            let batch_end = (id + SEED_BATCH_SIZE - 1).min(config.scenario.initial_rows);
+            let tx = self.conn.transaction()?;
+            {
+                let mut stmt = tx.prepare(
+                    "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )?;
+                for row_id in id..=batch_end {
+                    let row = make_row(config, row_id);
+                    stmt.execute(params![
+                        row.id as i64,
+                        row.category,
+                        row.score,
+                        row.payload,
+                        row.updated_at
+                    ])?;
+                }
             }
+            tx.commit()?;
+            id = batch_end + 1;
         }
-        tx.commit()?;
         Ok(())
     }
 
@@ -260,21 +269,28 @@ impl EngineAdapter for HematiteAdapter {
         "#,
         )?;
 
-        // Batch the initial inserts inside a single transaction to avoid
-        // committing each INSERT individually (very slow with WAL/flush-heavy storage).
-        let mut tx = self.db.transaction()?;
-        for id in 1..=config.scenario.initial_rows {
-            let row = make_row(config, id);
-            tx.execute(&format!(
-                "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES ({}, {}, {}, {}, {});",
-                row.id,
-                sql_string_literal(&row.category),
-                row.score,
-                sql_string_literal(&row.payload),
-                row.updated_at
-            ))?;
+        // Seed in batches to keep memory usage bounded. A single transaction
+        // over tens of thousands of rows forces Hematite to hold all dirty WAL
+        // frames in memory until commit, which can OOM the machine.
+        const SEED_BATCH_SIZE: u64 = 500;
+        let mut id = 1u64;
+        while id <= config.scenario.initial_rows {
+            let batch_end = (id + SEED_BATCH_SIZE - 1).min(config.scenario.initial_rows);
+            let mut tx = self.db.transaction()?;
+            for row_id in id..=batch_end {
+                let row = make_row(config, row_id);
+                tx.execute(&format!(
+                    "INSERT INTO bench_records (id, category, score, payload, updated_at) VALUES ({}, {}, {}, {}, {});",
+                    row.id,
+                    sql_string_literal(&row.category),
+                    row.score,
+                    sql_string_literal(&row.payload),
+                    row.updated_at
+                ))?;
+            }
+            tx.commit()?;
+            id = batch_end + 1;
         }
-        tx.commit()?;
         Ok(())
     }
 

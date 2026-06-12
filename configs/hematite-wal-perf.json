@@ -2,7 +2,7 @@
   "run_name": "wal perf",
   "engine": "hematite",
   "scenario": {
-    "initial_rows": 5000,
+    "initial_rows": 3000,
     "payload_size_bytes": 512,
     "category_count": 10,
     "range_scan_size": 20
