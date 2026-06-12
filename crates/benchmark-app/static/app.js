@@ -681,8 +681,17 @@ async function refreshRuns() {
 
   if (state.activeRunId) {
     try {
-      const detail = await ensureRunDetail(state.activeRunId);
-      if (detail) syncLiveControlsFromDetail(detail);
+      // Only fetch detail for active run if we don't already have an SSE stream
+      // providing live samples. If the stream is attached, it's the live source;
+      // avoid overwriting its in-memory samples with a potentially-stale HTTP fetch.
+      if (!state.eventSources.has(state.activeRunId)) {
+        const detail = await ensureRunDetail(state.activeRunId);
+        if (detail) syncLiveControlsFromDetail(detail);
+      } else {
+        // Still sync the live controls from whatever we have in memory.
+        const detail = state.runDetails.get(state.activeRunId);
+        if (detail) syncLiveControlsFromDetail(detail);
+      }
     } catch (e) {
       console.warn("failed to ensure active run detail", e);
     }
@@ -707,9 +716,26 @@ async function ensureRunDetail(runId) {
   if (!runId) {
     return null;
   }
-  const detail = await fetchJson(`/api/runs/${runId}`);
-  state.runDetails.set(runId, detail);
-  return detail;
+  const fetched = await fetchJson(`/api/runs/${runId}`);
+  const existing = state.runDetails.get(runId);
+  if (existing && existing.samples && existing.samples.length > 0) {
+    // Merge: keep in-memory SSE samples; append any server samples not yet in memory.
+    // Server samples come from metrics.jsonl (flushed to disk) — some recent ones
+    // may only be in memory via SSE. Deduplicate by timestamp_ms.
+    const inMemoryTs = new Set(existing.samples.map((s) => s.timestamp_ms));
+    const newFromDisk = (fetched.samples || []).filter((s) => !inMemoryTs.has(s.timestamp_ms));
+    fetched.samples = [...newFromDisk, ...existing.samples].sort(
+      (a, b) => a.timestamp_ms - b.timestamp_ms
+    );
+    // Preserve in-memory logs that may not be flushed to disk yet.
+    const inMemoryLogTs = new Set((existing.logs || []).map((l) => l.timestamp_ms));
+    const newLogsFromDisk = (fetched.logs || []).filter((l) => !inMemoryLogTs.has(l.timestamp_ms));
+    fetched.logs = [...newLogsFromDisk, ...(existing.logs || [])].sort(
+      (a, b) => a.timestamp_ms - b.timestamp_ms
+    );
+  }
+  state.runDetails.set(runId, fetched);
+  return fetched;
 }
 
 function attachStream(runId, retryDelayMs = 1000) {

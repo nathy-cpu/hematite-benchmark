@@ -532,9 +532,9 @@ async fn register_worker(
     let control_events_path = run_dir.join("control-events.jsonl");
     let summary_path = run_dir.join("summary.json");
 
-    let stdout_state = state.clone();
+     let stdout_state = state.clone();
     let stdout_run_id = run_id.clone();
-    let _stdout_tx = tx.clone();
+    let stdout_tx = tx.clone();
     let _stdout_task = tokio::spawn(async move {
         let mut file = match OpenOptions::new()
             .create(true)
@@ -564,6 +564,9 @@ async fn register_worker(
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             if let Ok(event) = serde_json::from_str::<WorkerEvent>(&line) {
+                // Broadcast the event to all SSE subscribers so the dashboard
+                // updates in real time (charts, logs, status changes).
+                let _ = stdout_tx.send(event.clone());
                 let _ = handle_worker_event(
                     &stdout_state,
                     &stdout_run_id,
