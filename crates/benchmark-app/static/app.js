@@ -712,7 +712,7 @@ async function ensureRunDetail(runId) {
   return detail;
 }
 
-function attachStream(runId) {
+function attachStream(runId, retryDelayMs = 1000) {
   const source = new EventSource(`/api/runs/${runId}/stream`);
   source.onmessage = (event) => {
     const payload = JSON.parse(event.data);
@@ -772,6 +772,12 @@ function attachStream(runId) {
   source.onerror = () => {
     source.close();
     state.eventSources.delete(runId);
+    // Reconnect with exponential backoff if the run is still active.
+    const run = getRunById(runId);
+    if (run && (run.status === "running" || run.status === "pending")) {
+      const nextDelay = Math.min((retryDelayMs || 1000) * 2, 30_000);
+      setTimeout(() => attachStream(runId, nextDelay), retryDelayMs || 1000);
+    }
   };
   state.eventSources.set(runId, source);
 }
@@ -1000,11 +1006,19 @@ function renderHistoryComparisonTable(details) {
 
 function startEditRunName(runId) {
   state.editingRunId = runId;
+  state.editingRunDraftName = null; // fresh edit, no draft yet
   renderHistorySummary();
+  // Focus the newly rendered input
+  const input = document.getElementById(`edit-name-input-${runId}`);
+  if (input) {
+    input.focus();
+    input.select();
+  }
 }
 
 function cancelEditRunName() {
   state.editingRunId = null;
+  state.editingRunDraftName = null;
   renderHistorySummary();
 }
 
@@ -1027,6 +1041,7 @@ async function saveRunName(runId) {
       throw new Error(await res.text());
     }
     state.editingRunId = null;
+    state.editingRunDraftName = null;
     await refreshRuns();
     renderHistorySummary();
   } catch (e) {
@@ -1078,6 +1093,20 @@ function renderHistorySummary() {
 
   // Render the side-by-side comparison table
   renderHistoryComparisonTable(details);
+
+  // If an edit is in progress, snapshot the current typed value before
+  // we blow away the DOM. We'll restore it after innerHTML is set.
+  let draftValue = null;
+  let draftSelStart = null;
+  let draftSelEnd = null;
+  if (state.editingRunId) {
+    const existingInput = document.getElementById(`edit-name-input-${state.editingRunId}`);
+    if (existingInput) {
+      draftValue = existingInput.value;
+      draftSelStart = existingInput.selectionStart;
+      draftSelEnd = existingInput.selectionEnd;
+    }
+  }
 
   container.innerHTML = details.map(({ run, detail }) => {
     const summary = run.summary || detail.summary;
@@ -1165,6 +1194,16 @@ function renderHistorySummary() {
       </div>
     `;
   }).join("");
+
+  // Restore the user's in-progress draft after the DOM was rebuilt.
+  if (state.editingRunId && draftValue !== null) {
+    const restoredInput = document.getElementById(`edit-name-input-${state.editingRunId}`);
+    if (restoredInput) {
+      restoredInput.value = draftValue;
+      // Restore caret so the cursor doesn't jump to the end.
+      restoredInput.setSelectionRange(draftSelStart, draftSelEnd);
+    }
+  }
 }
 
 function renderDashboardCharts() {
@@ -1709,12 +1748,13 @@ function formatBytesPerSecond(value) {
 
 function syncConcurrencyControls(value) {
   const range = document.getElementById("live-concurrency");
-  const input = document.getElementById("live-concurrency-input");
   const numeric = Math.max(1, Number(value) || 1);
-  range.max = String(Math.max(32, numeric));
-  range.value = String(numeric);
-  input.value = String(numeric);
-  document.getElementById("live-concurrency-value").textContent = String(numeric);
+  if (range) {
+    range.max = String(Math.max(32, numeric));
+    range.value = String(numeric);
+  }
+  const label = document.getElementById("live-concurrency-value");
+  if (label) label.textContent = String(numeric);
 }
 
 function statusPillClass(status) {
@@ -1826,7 +1866,8 @@ async function boot() {
     renderSetupSummary();
   }
   await refreshRuns();
-  setInterval(refreshRuns, 5000);
+  // No polling — live updates arrive via SSE. refreshRuns() is called
+  // once at boot and again after each run finishes or fails.
 }
 
 boot().catch((error) => {
