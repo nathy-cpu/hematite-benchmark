@@ -1103,6 +1103,8 @@ window.startEditRunName = startEditRunName;
 window.cancelEditRunName = cancelEditRunName;
 window.saveRunName = saveRunName;
 window.confirmDeleteRun = confirmDeleteRun;
+window.viewArtifact = viewArtifact;
+
 
 function renderHistorySummary() {
   const container = document.getElementById("history-summary");
@@ -1185,16 +1187,39 @@ function renderHistorySummary() {
           const parts = [];
           if (ap.flamegraph_path) {
             const fn = ap.flamegraph_path.split("/").pop();
-            parts.push(`<a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank">Flamegraph</a>`);
+            parts.push(`
+              <div class="artifact-item" style="display: flex; gap: 8px; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.02); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--panel-border); width: 100%;">
+                <span class="run-meta" style="font-weight: 500; font-size: 0.8rem; color: var(--text);">Flamegraph</span>
+                <div style="display: flex; gap: 6px;">
+                  <button class="ghost small-btn" style="padding: 4px 8px; font-size: 0.75rem;" onclick="viewArtifact('${run.run_id}', '${encodeURIComponent(fn)}', 'Flamegraph')">View Inline</button>
+                  <a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank" class="small-btn" style="padding: 4px 8px; font-size: 0.75rem; background: rgba(255,255,255,0.06); border-radius: 8px; text-decoration: none; color: var(--text); display: inline-flex; align-items: center;">Download</a>
+                </div>
+              </div>
+            `);
           }
           if (ap.perf_data_path) {
             const fn = ap.perf_data_path.split("/").pop();
-            parts.push(`<a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank">Perf data</a>`);
+            parts.push(`
+              <div class="artifact-item" style="display: flex; gap: 8px; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.02); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--panel-border); width: 100%;">
+                <span class="run-meta" style="font-weight: 500; font-size: 0.8rem; color: var(--text);">Perf Data</span>
+                <div style="display: flex; gap: 6px;">
+                  <a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank" class="small-btn" style="padding: 4px 8px; font-size: 0.75rem; background: rgba(255,255,255,0.06); border-radius: 8px; text-decoration: none; color: var(--text); display: inline-flex; align-items: center;">Download</a>
+                </div>
+              </div>
+            `);
           }
           if (ap.strace_paths && ap.strace_paths.length) {
             ap.strace_paths.forEach((p) => {
               const fn = p.split("/").pop();
-              parts.push(`<a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank">strace: ${escapeHtml(fn)}</a>`);
+              parts.push(`
+                <div class="artifact-item" style="display: flex; gap: 8px; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.02); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--panel-border); width: 100%;">
+                  <span class="run-meta" style="font-weight: 500; font-size: 0.8rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;" title="${escapeHtml(fn)}">${escapeHtml(fn)}</span>
+                  <div style="display: flex; gap: 6px;">
+                    <button class="ghost small-btn" style="padding: 4px 8px; font-size: 0.75rem;" onclick="viewArtifact('${run.run_id}', '${encodeURIComponent(fn)}', 'Strace Output')">View Inline</button>
+                    <a href="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(fn)}" target="_blank" class="small-btn" style="padding: 4px 8px; font-size: 0.75rem; background: rgba(255,255,255,0.06); border-radius: 8px; text-decoration: none; color: var(--text); display: inline-flex; align-items: center;">Download</a>
+                  </div>
+                </div>
+              `);
             });
           }
           if (parts.length) {
@@ -1206,8 +1231,8 @@ function renderHistorySummary() {
                       <h3>Run Artifacts</h3>
                     </div>
                   </div>
-                  <div class="artifact-list">${parts.join(" | ")}</div>
-                  ${ap.flamegraph_path ? `<div class="flamegraph-embed"><img src="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(ap.flamegraph_path.split("/").pop())}" alt="flamegraph" /></div>` : ""}
+                  <div class="artifact-list" style="display: flex; flex-direction: column; gap: 8px; width: 100%;">${parts.join("")}</div>
+                  ${ap.flamegraph_path ? `<div class="flamegraph-embed" style="cursor: pointer;" onclick="viewArtifact('${run.run_id}', '${encodeURIComponent(ap.flamegraph_path.split("/").pop())}', 'Flamegraph')"><img src="/api/runs/${run.run_id}/artifact?name=${encodeURIComponent(ap.flamegraph_path.split("/").pop())}" alt="flamegraph" /></div>` : ""}
                 </div>
               `;
           }

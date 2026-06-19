@@ -1348,7 +1348,43 @@ async fn spawn_worker_process(
     }
 
     // Decide whether to wrap invocation with perf or strace
-    let (launcher, mut command) = if effective.worker_perf {
+    let (launcher, mut command) = if effective.worker_perf && effective.worker_strace {
+        // normalize perf output path: relative -> inside run_dir
+        let perf_out = effective
+            .worker_perf_output
+            .clone()
+            .unwrap_or_else(|| "perf.data".to_string());
+        let perf_out_path = if std::path::Path::new(&perf_out).is_absolute() {
+            std::path::PathBuf::from(perf_out)
+        } else {
+            run_dir.join(perf_out)
+        };
+        let perf_out_str = perf_out_path.display().to_string();
+        let freq = effective
+            .worker_perf_freq_hz
+            .map(|hz| hz.to_string())
+            .unwrap_or_else(|| "99".to_string());
+
+        // normalize strace output path
+        let strace_prefix = effective
+            .worker_strace_output
+            .clone()
+            .unwrap_or_else(|| "strace".to_string());
+        let strace_path = if std::path::Path::new(&strace_prefix).is_absolute() {
+            std::path::PathBuf::from(strace_prefix)
+        } else {
+            run_dir.join(strace_prefix)
+        };
+        let strace_prefix_str = strace_path.display().to_string();
+
+        let mut cmd = Command::new("perf");
+        cmd.args(["record", "-F", &freq, "-g", "-o", &perf_out_str, "--", "strace", "-ff", "-tt", "-o", &strace_prefix_str, "-s", "200", "--"]);
+        cmd.args(invocation.iter());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        ("perf + strace", cmd)
+    } else if effective.worker_perf {
         // normalize perf output path: relative -> inside run_dir
         let perf_out = effective
             .worker_perf_output
