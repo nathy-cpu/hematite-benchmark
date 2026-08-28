@@ -195,9 +195,10 @@ impl EngineAdapter for SqliteAdapter {
     }
 
     fn delete_row(&mut self, id: u64) -> Result<usize> {
-        let affected = self
-            .conn
-            .execute("DELETE FROM bench_records WHERE id = ?1", params![id as i64])?;
+        let affected = self.conn.execute(
+            "DELETE FROM bench_records WHERE id = ?1",
+            params![id as i64],
+        )?;
         Ok(affected)
     }
 
@@ -299,7 +300,7 @@ impl EngineAdapter for HematiteAdapter {
             "SELECT id, category, score, payload, updated_at FROM bench_records WHERE id = {};",
             id
         ))?;
-        Ok(rows.rows.len())
+        Ok(rows.len())
     }
 
     fn range_scan(&mut self, start_id: u64, limit: usize) -> Result<usize> {
@@ -307,7 +308,7 @@ impl EngineAdapter for HematiteAdapter {
             "SELECT id, category, score, payload, updated_at FROM bench_records WHERE id >= {} ORDER BY id LIMIT {};",
             start_id, limit
         ))?;
-        Ok(rows.rows.len())
+        Ok(rows.len())
     }
 
     fn insert_row(&mut self, row: &BenchRow) -> Result<()> {
@@ -341,10 +342,10 @@ impl EngineAdapter for HematiteAdapter {
     }
 
     fn aggregate(&mut self) -> Result<usize> {
-        let rows = self.db.query(
-            "SELECT category, COUNT(*), SUM(score) FROM bench_records GROUP BY category;",
-        )?;
-        Ok(rows.rows.len())
+        let rows = self
+            .db
+            .query("SELECT category, COUNT(*), SUM(score) FROM bench_records GROUP BY category;")?;
+        Ok(rows.len())
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -394,9 +395,7 @@ pub fn execute_operation(
             row.score += 1;
             adapter.update_row(&row)
         }
-        OperationKind::Delete => {
-            adapter.delete_row(choose_existing_id(next_id.saturating_sub(1)))
-        }
+        OperationKind::Delete => adapter.delete_row(choose_existing_id(next_id.saturating_sub(1))),
         OperationKind::Aggregate => adapter.aggregate(),
     }
 }
@@ -433,24 +432,96 @@ mod tests {
         }
     }
 
+    /// The operations the benchmark issues, with the answers both engines owe.
+    ///
+    /// Every adapter is driven through this, so a SQL feature one engine has
+    /// dropped shows up as a failing test rather than as a silently cheaper
+    /// number in a comparison. Counts are exact: an engine that quietly returns
+    /// nothing for a scan or an aggregate would otherwise look fast.
+    fn assert_workload_contract(
+        adapter: &mut dyn EngineAdapter,
+        config: &BenchmarkConfig,
+    ) -> Result<()> {
+        // prepare_dataset seeded ids 1..=initial_rows.
+        let seeded = config.scenario.initial_rows;
+        let categories = config.scenario.category_count as usize;
+
+        assert_eq!(adapter.point_read(1)?, 1, "first seeded row must read back");
+        assert_eq!(
+            adapter.point_read(seeded)?,
+            1,
+            "last seeded row must read back"
+        );
+        assert_eq!(
+            adapter.point_read(seeded + 10_000)?,
+            0,
+            "a missing id must read back empty"
+        );
+
+        assert_eq!(adapter.range_scan(1, 5)?, 5, "a scan must honour its LIMIT");
+        assert_eq!(
+            adapter.range_scan(seeded - 2, 5)?,
+            3,
+            "a scan must stop at the last row instead of wrapping"
+        );
+
+        assert_eq!(
+            adapter.aggregate()?,
+            categories,
+            "GROUP BY must return one row per category"
+        );
+
+        adapter.insert_row(&make_row(config, seeded + 1))?;
+        assert_eq!(
+            adapter.point_read(seeded + 1)?,
+            1,
+            "an inserted row must be visible"
+        );
+
+        assert_eq!(
+            adapter.update_row(&make_row(config, 10))?,
+            1,
+            "updating an existing row must affect exactly it"
+        );
+        assert_eq!(
+            adapter.update_row(&make_row(config, seeded + 10_000))?,
+            0,
+            "updating a missing row must affect nothing"
+        );
+
+        assert_eq!(adapter.delete_row(5)?, 1, "deleting a row must affect it");
+        assert_eq!(
+            adapter.point_read(5)?,
+            0,
+            "a deleted row must no longer read back"
+        );
+        assert_eq!(
+            adapter.delete_row(5)?,
+            0,
+            "deleting an already deleted row must affect nothing"
+        );
+
+        assert_eq!(
+            adapter.aggregate()?,
+            categories,
+            "GROUP BY must still cover every category after the writes"
+        );
+
+        adapter.flush()?;
+        Ok(())
+    }
+
     #[test]
     fn sqlite_adapter_supports_full_workload() -> Result<()> {
         let dir = tempdir()?;
         let mut adapter = SqliteAdapter::open(dir.path(), Default::default())?;
         let config = sqlite_config();
         adapter.prepare_dataset(&config)?;
-
-        assert_eq!(adapter.point_read(1)?, 1);
-        assert!(adapter.range_scan(1, 5)? >= 1);
-        adapter.insert_row(&make_row(&config, 51))?;
-        assert_eq!(adapter.update_row(&make_row(&config, 10))?, 1);
-        assert_eq!(adapter.delete_row(5)?, 1);
-        assert!(adapter.aggregate()? >= 1);
-        Ok(())
+        assert_workload_contract(&mut adapter, &config)
     }
 
     #[test]
-    fn hematite_adapter_supports_documented_sql_surface() -> Result<()> {
+    fn hematite_adapter_supports_full_workload() -> Result<()> {
         let dir = tempdir()?;
         let mut adapter = HematiteAdapter::open(dir.path(), Default::default())?;
         let config = BenchmarkConfig {
@@ -458,11 +529,25 @@ mod tests {
             ..sqlite_config()
         };
         adapter.prepare_dataset(&config)?;
+        assert_workload_contract(&mut adapter, &config)
+    }
 
-        assert_eq!(adapter.point_read(1)?, 1);
-        assert!(adapter.range_scan(1, 5)? >= 1);
-        adapter.insert_row(&make_row(&config, 51))?;
-        assert_eq!(adapter.update_row(&make_row(&config, 10))?, 1);
+    /// The schema statements must be re-runnable, since a worker reopens a data
+    /// directory a previous run already created.
+    #[test]
+    fn hematite_schema_is_idempotent() -> Result<()> {
+        let dir = tempdir()?;
+        let mut adapter = HematiteAdapter::open(dir.path(), Default::default())?;
+        let config = BenchmarkConfig {
+            engine: EngineKind::Hematite,
+            scenario: ScenarioConfig {
+                initial_rows: 0,
+                ..sqlite_config().scenario
+            },
+            ..sqlite_config()
+        };
+        adapter.prepare_dataset(&config)?;
+        adapter.prepare_dataset(&config)?;
         Ok(())
     }
 }
